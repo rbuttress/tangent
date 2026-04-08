@@ -1,0 +1,75 @@
+/* //version no. 1.0 */
+body, html {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background-color: #121212;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+#bgCanvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 1; /* Behind UI */
+}
+
+#ui-layer {
+    position: relative;
+    z-index: 10; /* Above Canvas */
+    pointer-events: none; /* Let clicks pass to canvas if not on a widget */
+    width: 100%; height: 100%;
+}
+
+.widget {
+    pointer-events: auto; /* Enable clicks on widgets */
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 300px;
+    background: rgba(30, 30, 30, 0.9);
+    border: 1px solid #444;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    color: #eee;
+}
+
+.widget-header {
+    background: #333;
+    padding: 8px 12px;
+    font-weight: bold;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    font-size: 0.9em;
+}
+
+.widget-body { padding: 12px; }
+
+input, select, button {
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 6px;
+    background: #252525;
+    border: 1px solid #555;
+    color: white;
+    box-sizing: border-box;
+}
+
+button {
+    background: #007acc;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover { background: #005a9e; }
+
+#console {
+    height: 150px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 11px;
+    background: #000;
+    padding: 5px;
+    margin-top: 5px;
+    color: #4ec9b0;
+}
