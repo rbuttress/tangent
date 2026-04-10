@@ -64,12 +64,127 @@ button {
 button:hover { background: #005a9e; }
 
 #console {
-    height: 150px;
-    overflow-y: auto;
-    font-family: monospace;
-    font-size: 11px;
+    flex-grow: 1; /* This forces the console to fill all available space */
     background: #000;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    font-family: monospace;
+    font-size: 10px;
     padding: 5px;
-    margin-top: 5px;
+    color: #aaa;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.4;
+    border: 1px solid #222;
+}
+
+.console-input-wrap {
+    display: flex;
+    background: #111;
+    border: 1px solid #444;
+    border-top: none; /* Merges visually with the console border */
+    padding: 2px;
+    flex-shrink: 0; /* Prevents the input from being squashed */
+}
+
+.console-input-wrap span {
     color: #4ec9b0;
+    padding: 5px 0 5px 5px;
+    font-family: monospace;
+    font-weight: bold;
+}
+
+#gcode-input {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    color: #4ec9b0; /* Give the user input a distinct color */
+    font-family: monospace;
+    padding: 5px;
+    outline: none;
+}
+
+
+/* //version no. 1.2 */
+
+.window {
+    position: absolute;
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid #444;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    min-width: 250px;
+    max-height: 95vh; /* Never taller than 95% of viewport */
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    pointer-events: auto;
+    overflow: hidden;
+}
+
+/* Custom Resize Handles */
+.resizer-r, .resizer-l {
+    position: absolute;
+    top: 0;
+    width: 5px;
+    height: 100%;
+    cursor: ew-resize;
+    z-index: 20;
+}
+.resizer-r { right: 0; }
+.resizer-l { left: 0; }
+
+
+.window-header {
+    background: #333;
+    padding: 8px 12px;
+    cursor: move;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 35px;
+    flex-shrink: 0;
+}
+
+.window-title-area {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.window-title {
+    font-size: 11px;
+    font-weight: bold;
+    color: #eee;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.status-text {
+    font-size: 9px;
+    font-weight: bold;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #444;
+    color: #f44747; /* Default Red */
+}
+
+.status-text.online {
+    color: #4ec9b0; /* Green */
+}
+
+.window-content {
+    flex-grow: 1;
+    padding: 10px;
+    overflow: hidden; /* Let the children handle internal scrolling */
+    display: flex;
+    flex-direction: column;
+}
+
+/* The Minimized State: Shrink to exactly the header height */
+.window.minimized {
+    height: 35px !important; 
+    min-height: 35px !important;
+    max-height: 35px !important;
+    resize: none !important;
 }

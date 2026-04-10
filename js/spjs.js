@@ -1,10 +1,10 @@
-//version no. 1.0
+//version no. 1.2
 export class SpjsClient {
     constructor(url) {
         this.url = url;
         this.socket = null;
-        this.onData = null; // Callback for TinyG responses
-        this.onPorts = null; // Callback for port lists
+        this.onData = null; 
+        this.onPorts = null; 
     }
 
     connect() {
@@ -27,12 +27,17 @@ export class SpjsClient {
     }
 
     send(cmd) {
-        if (this.socket?.readyState === 1) this.socket.send(cmd);
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(cmd);
+        }
     }
 
     list() { this.send("list"); }
 
     open(portName) {
+        // Open the hardware port
         this.send(`open ${portName} 115200 tinyg`);
+        // CRITICAL: Tell SPJS to pipe that port's data to this WebSocket
+        this.send(`watch ${portName}`);
     }
 }
