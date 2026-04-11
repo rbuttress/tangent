@@ -324,3 +324,46 @@ button:hover { background: #005a9e; }
     text-align: right;
     border-top: 1px solid #444;
 }
+
+/* //version no. 2.2 */
+.estop-btn {
+    background: #f44747 !important;
+    color: white !important;
+    border-radius: 4px !important;
+    width: 24px !important;
+    height: 24px !important;
+    padding: 0 !important;
+    font-size: 14px !important;
+    cursor: pointer;
+    border: none;
+}
+
+.estop-btn.active {
+    animation: blinker 1s linear infinite;
+    box-shadow: 0 0 10px #f44747;
+}
+
+@keyframes blinker { 50% { opacity: 0; } }
+
+.hold-menu {
+    position: absolute;
+    background: #252525;
+    border: 1px solid #f44747;
+    z-index: 2000;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.hold-menu button {
+    display: block;
+    width: 100px;
+    margin: 0;
+    padding: 10px;
+    border: none;
+    border-bottom: 1px solid #333;
+    background: #252525;
+    color: white;
+}
+
+.hold-menu button:hover { background: #333; }

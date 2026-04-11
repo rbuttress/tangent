@@ -27,6 +27,19 @@ export class WidgetWindow {
         this.initEvents();
     }
 
+    replaceMinWithEStop(callback) {
+    const minBtn = this.el.querySelector('.min-btn');
+    if (minBtn) {
+        minBtn.innerHTML = '🛑';
+        minBtn.className = 'estop-btn';
+        minBtn.title = 'FEED HOLD';
+        minBtn.onclick = (e) => {
+            e.stopPropagation();
+            callback();
+        };
+    }
+}
+
     setStatus(text, isOnline = false) {
         this.statusEl.innerText = text;
         this.statusEl.classList.toggle('online', isOnline);

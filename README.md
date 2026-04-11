@@ -1,64 +1,36 @@
-TinyG Tangential Knife Controller
-//version no. 1.0
+# Tangential Knife CNC & CAM Controller (v3.8)
 
-A modular, web-based CNC interface built with ES Modules and Vanilla JavaScript. This project serves as a lightweight alternative to ChiliPeppr, optimized for controlling a 4-axis (XYZA) tangential knife cutter.
+A modular, web-based control suite specifically designed for tangential knife cutting systems with infinite Y-axis conveyor capabilities. Built on a decoupled ES6 architecture for high-speed hardware communication and real-time geometry processing.
 
-🏗 Project Structure
-The application is split into three primary layers: the Backend (Node.js), the Communication Layer (SPJS Client), and the Visual Layer (Canvas & UI).
+## 🏗️ System Architecture
+The application has been refactored from a monolithic script into a modular component-based system:
 
-Plaintext
-/cnc-controller
-├── server.js           # Node.js/Express server to host the local UI
-├── index.html          # HTML5 Shell; entry point for the application
-├── style.css           # Global styles and floating widget layout
-└── js/
-    ├── main.js         # App Orchestrator; ties logic and UI together
-    ├── spjs.js         # Connection Module; handles WebSocket logic for SPJS
-    └── canvas.js       # Background Visualizer; handles the fullscreen grid
-    
-📂 File Descriptions
-server.js
-A minimalist Express server. While the frontend can run as a flat file, using a server prevents CORS issues and allows for future features like local G-code file parsing and saving machine configurations.
+* **Core (`/js/core`)**:
+    * `machine.js`: The "Single Source of Truth." Manages high-precision global state, axis configurations, and coordinate tracking.
+    * `spjs.js`: Low-latency WebSocket client for Serial Port JSON Server (SPJS) communication.
+* **UI Components (`/js/ui`)**:
+    * `window.js`: An extensible Widget Window manager with minimization and custom header controls.
+    * `dro.js`: High-precision Digital Readout (4 decimal places) with integrated Logarithmic Jogging and Feedhold safety logic.
+    * `connection.js`: Hardware abstraction layer managing serial port handshaking and machine-specific parameter tuning.
+* **Visualizer (`/js/visualizer`)**:
+    * `canvas.js`: Full-screen hardware-accelerated drawing environment (Ready for G-Code & Fabric visualization).
 
-index.html
-The "Layout" file. It defines a fullscreen <canvas> that stays fixed in the background and a #ui-layer div that holds floating widgets. It loads the logic using type="module".
+## 🚀 Key Features
+* **Logarithmic Absolute Jogging**: Maps linear slider input (0-100%) to a logarithmic scale (0.01mm - 100mm) for both microscopic precision and rapid machine traversal.
+* **Intelligent Homing Sequence**: Tiered homing logic ($Z \rightarrow A \rightarrow X \rightarrow Y$) that detects both Min (`sn`) and Max (`sx`) limit switches.
+* **Feedhold & Recovery**: Real-time hardware interrupt system (`!`) with a recovery context menu to **Resume** or **Clear** buffers while maintaining absolute coordinate integrity.
+* **Dynamic Configuration Modal**: On-the-fly tuning of every TinyG parameter (Velocity, Jerk, Travel, etc.) with delta-only patching to hardware.
+* **Modular Data Routing**: Implementation of a streaming data buffer to handle fragmented serial packets and ensure valid JSON parsing.
 
-style.css
-Handles the "Dashboard" feel.
+## ⚙️ Technical Specs
+- **Work Area**: 1600mm (X) x Infinite (Y-Conveyor)
+- **Precision**: 0.0001mm tracking
+- **Communication**: WebSocket via SPJS
+- **Frontend**: Vanilla ES6+, CSS3 (Grid/Flexbox), HTML5 Canvas
 
-Background: The canvas is set to z-index: 1.
-
-Foreground: Widgets are positioned absolutely with z-index: 10 and use pointer-events: auto so the background remains interactive where widgets aren't present.
-
-js/spjs.js (The Driver)
-An encapsulated Class (SpjsClient) that manages the WebSocket handshake with the Serial Port JSON Server.
-
-Methods: connect(), list(), open(port).
-
-Callbacks: Provides hooks for onPorts and onData so other modules can react to machine feedback without managing the socket themselves.
-
-js/canvas.js (The View)
-An encapsulated Class (Visualizer) that manages the background drawing context. It includes an automatic resize() listener to ensure the CNC grid always fills the browser window.
-
-js/main.js (The Controller)
-The central nervous system of the app. It imports the modules, instantiates the classes, and attaches event listeners to the DOM elements.
-
-🚀 Getting Started
-Start SPJS: Ensure the Serial Port JSON Server is running on your machine (default port 8989).
-
-Install Dependencies:
-
-Bash
-npm install express
-Run the Host:
-
-Bash
-node server.js
-Access the UI: Navigate to http://localhost:3000 in any modern web browser.
-
-🛠 Future Modules
-DRO Widget: Real-time Digital Read Out for X, Y, Z, and A coordinates.
-
-G-Code Parser: Logic to stream G-code files to TinyG via the SPJS buffer.
-
-Tangential Logic: Mathematical transformation for the A-axis based on XY heading changes.
+## 📅 Roadmap
+- [ ] **Visualizer Engine**: Implementation of the 20mm tool symbol with radial A-axis vector.
+- [ ] **Geometry Module**: DXF parsing and cleaning of Clo3D pattern outputs.
+- [ ] **Fabric Management**: Local persistence of fabric types and "cut-history" remnants using IndexedDB.
+- [ ] **The Tangential Engine**: Automatic A-axis path-following post-processor.
+- [ ] **Nesting & Job Queue**: Multi-part placement and execution management.
