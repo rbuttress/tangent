@@ -1,4 +1,6 @@
-/* //version no. 1.0 */
+/* //version no. 2.0 - Unified CNC Controller Styles */
+
+/* --- 1. CORE & BASE --- */
 body, html {
     margin: 0; padding: 0;
     width: 100%; height: 100%;
@@ -11,39 +13,15 @@ body, html {
     position: fixed;
     top: 0; left: 0;
     width: 100vw; height: 100vh;
-    z-index: 1; /* Behind UI */
+    z-index: 1;
 }
 
 #ui-layer {
     position: relative;
-    z-index: 10; /* Above Canvas */
-    pointer-events: none; /* Let clicks pass to canvas if not on a widget */
+    z-index: 10;
+    pointer-events: none;
     width: 100%; height: 100%;
 }
-
-.widget {
-    pointer-events: auto; /* Enable clicks on widgets */
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    width: 300px;
-    background: rgba(30, 30, 30, 0.9);
-    border: 1px solid #444;
-    border-radius: 8px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-    color: #eee;
-}
-
-.widget-header {
-    background: #333;
-    padding: 8px 12px;
-    font-weight: bold;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
-    font-size: 0.9em;
-}
-
-.widget-body { padding: 12px; }
 
 input, select, button {
     width: 100%;
@@ -59,54 +37,12 @@ button {
     background: #007acc;
     cursor: pointer;
     font-weight: bold;
+    border-radius: 2px;
 }
 
 button:hover { background: #005a9e; }
 
-#console {
-    flex-grow: 1; /* This forces the console to fill all available space */
-    background: #000;
-    overflow-y: scroll;
-    overflow-x: hidden;
-    font-family: monospace;
-    font-size: 10px;
-    padding: 5px;
-    color: #aaa;
-    white-space: pre-wrap;
-    word-break: break-all;
-    line-height: 1.4;
-    border: 1px solid #222;
-}
-
-.console-input-wrap {
-    display: flex;
-    background: #111;
-    border: 1px solid #444;
-    border-top: none; /* Merges visually with the console border */
-    padding: 2px;
-    flex-shrink: 0; /* Prevents the input from being squashed */
-}
-
-.console-input-wrap span {
-    color: #4ec9b0;
-    padding: 5px 0 5px 5px;
-    font-family: monospace;
-    font-weight: bold;
-}
-
-#gcode-input {
-    flex-grow: 1;
-    background: transparent;
-    border: none;
-    color: #4ec9b0; /* Give the user input a distinct color */
-    font-family: monospace;
-    padding: 5px;
-    outline: none;
-}
-
-
-/* //version no. 1.2 */
-
+/* --- 2. MODULAR WINDOWS --- */
 .window {
     position: absolute;
     background: rgba(30, 30, 30, 0.95);
@@ -114,25 +50,18 @@ button:hover { background: #005a9e; }
     border-radius: 4px;
     display: flex;
     flex-direction: column;
-    min-width: 250px;
-    max-height: 95vh; /* Never taller than 95% of viewport */
+    min-width: 210px;
+    max-height: 95vh;
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
     pointer-events: auto;
     overflow: hidden;
 }
 
-/* Custom Resize Handles */
-.resizer-r, .resizer-l {
-    position: absolute;
-    top: 0;
-    width: 5px;
-    height: 100%;
-    cursor: ew-resize;
-    z-index: 20;
+.transparent-window {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
 }
-.resizer-r { right: 0; }
-.resizer-l { left: 0; }
-
 
 .window-header {
     background: #333;
@@ -159,32 +88,239 @@ button:hover { background: #005a9e; }
     letter-spacing: 1px;
 }
 
-.status-text {
-    font-size: 9px;
-    font-weight: bold;
-    text-transform: uppercase;
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: #444;
-    color: #f44747; /* Default Red */
-}
-
-.status-text.online {
-    color: #4ec9b0; /* Green */
-}
-
 .window-content {
     flex-grow: 1;
     padding: 10px;
-    overflow: hidden; /* Let the children handle internal scrolling */
+    overflow: hidden;
     display: flex;
     flex-direction: column;
 }
 
-/* The Minimized State: Shrink to exactly the header height */
 .window.minimized {
-    height: 35px !important; 
-    min-height: 35px !important;
-    max-height: 35px !important;
-    resize: none !important;
+    height: 45px !important; 
+    min-height: 45px !important;
+    max-height: 45px !important;
+}
+
+/* Resizers */
+.resizer-r, .resizer-l {
+    position: absolute;
+    top: 0;
+    width: 5px;
+    height: 100%;
+    cursor: ew-resize;
+    z-index: 20;
+}
+.resizer-r { right: 0; }
+.resizer-l { left: 0; }
+
+/* --- 3. CONSOLE COMPONENT --- */
+#console {
+    flex-grow: 1;
+    background: #000;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    font-family: monospace;
+    font-size: 10px;
+    padding: 5px;
+    color: #aaa;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.4;
+    border: 1px solid #222;
+}
+
+.console-input-wrap {
+    display: flex;
+    background: #111;
+    border: 1px solid #444;
+    border-top: none;
+    padding: 2px;
+    flex-shrink: 0;
+}
+
+.console-input-wrap span {
+    color: #4ec9b0;
+    padding: 5px 0 5px 5px;
+    font-family: monospace;
+    font-weight: bold;
+}
+
+#gcode-input {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    color: #4ec9b0;
+    font-family: monospace;
+    padding: 5px;
+    outline: none;
+}
+
+/* --- 4. DRO & JOGGING (TOP RIGHT) --- */
+.dro-column-wrap {
+    width: 200px;
+    margin-left: auto;
+}
+
+.dro-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 200px;
+    margin-bottom: 4px;
+    height: 35px;
+}
+
+.dro-readout {
+    font-family: 'Courier New', monospace;
+    font-size: 24px;
+    color: #eee;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+}
+
+.axis-control-group {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.axis-main-label {
+    font-size: 20px;
+    font-weight: bold;
+    color: #569cd6;
+    text-shadow: 1px 1px 3px #000;
+}
+
+.axis-hover-btns {
+    position: absolute;
+    left: 0; /* Align with left side of row in unified column */
+    display: none;
+    flex-direction: row;
+    gap: 2px;
+    background: rgba(30,30,30,0.9);
+    padding: 2px;
+    border-radius: 4px;
+    z-index: 30;
+}
+
+.axis-control-group:hover .axis-hover-btns { display: flex; }
+
+/* Jogging Controls */
+.jog-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    width: 200px;
+    margin-bottom: 10px;
+}
+
+.jog-btn {
+    background: rgba(60,60,60,0.8);
+    border: 1px solid #444;
+    color: white;
+    padding: 10px 0;
+    cursor: pointer;
+    font-weight: bold;
+    border-radius: 3px;
+}
+
+.jog-btn:hover { background: #555; }
+.jog-btn.home-all { background: #d7ba7d; color: #000; }
+
+.jog-slider-wrap {
+    width: 200px;
+    margin-bottom: 15px;
+}
+
+.jog-label-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #888;
+    margin-bottom: 4px;
+}
+
+#jog-dist-readout { color: #4ec9b0; font-weight: bold; font-family: monospace; }
+#jog-slider { cursor: pointer; accent-color: #4ec9b0; }
+
+/* Status Indicators */
+.header-stat {
+    font-size: 9px;
+    font-weight: bold;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.5);
+    margin-left: 5px;
+    border: 1px solid #444;
+}
+
+.status-text {
+    font-size: 9px;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #444;
+    color: #f44747;
+}
+
+.status-text.online { color: #4ec9b0; }
+.gear-btn { background: transparent; border: none; color: #888; cursor: pointer; font-size: 16px; width: auto; }
+.gear-btn:hover { color: #fff; }
+
+/* --- 5. MODALS & SETTINGS --- */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.8);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-window {
+    background: #252525;
+    border: 1px solid #444;
+    width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 4px;
+}
+
+.modal-body {
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.settings-group {
+    border: 1px solid #333;
+    padding: 10px;
+    margin-bottom: 15px;
+}
+
+.settings-group h4 { margin: 0 0 10px 0; color: #569cd6; text-transform: uppercase; font-size: 12px; }
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+    background: #1a1a1a;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+.setting-item { display: flex; flex-direction: column; }
+.setting-item label { font-size: 9px; color: #888; text-transform: uppercase; margin-bottom: 2px; }
+.setting-item input { background: #000; border: 1px solid #444; color: #4ec9b0; font-size: 11px; padding: 4px; }
+
+.modal-footer {
+    padding: 10px;
+    background: #1e1e1e;
+    text-align: right;
+    border-top: 1px solid #444;
 }
