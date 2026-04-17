@@ -1,36 +1,50 @@
 //js/main.js
-//version no. 3.4 (Refactored)
-console.log("Main.js start");
+//version no. 4.0
+
 import { machine } from './core/machine.js';
 import { SpjsClient } from './core/spjs.js';
 import { WidgetWindow } from './ui/window.js';
 import { DRO } from './ui/dro.js';
 import { ConnectionUI } from './ui/connection.js';
 import { Visualizer } from './visualizer/canvas.js';
+import { ControllerManager } from './core/controller.js';
 
-console.log("Main.js finished loading");
-// 1. Init Hardware Comm
-const spjs = new SpjsClient(); 
+// 1. Initialize non-UI logic first
+const spjs = new SpjsClient();
+const controller = new ControllerManager(spjs);
 
-// 2. Init Windows
-const connWin = new WidgetWindow('conn-widget', 'TinyG Connection', 5, 5, 350);
-const droWin = new WidgetWindow('dro-widget', '☭', window.innerWidth - 225, 5, 210);
+// 2. Initialize the Window Containers (the boxes)
+const connWin = new WidgetWindow('conn-widget', 'TinyG Connection', 5, 5, 420);
+// Initial DRO placement variables
+const droPadding = 5;
+const droWidth = 210;
+const droWin = new WidgetWindow('dro-widget', 'Control', window.innerWidth - droWidth - droPadding, 5, droWidth);
+droWin.el.classList.add('transparent-window');
+// --- THE FIX: Lock DRO to the right edge on resize ---
+window.addEventListener('resize', () => {
+    // We calculate this using the element's actual offsetWidth just in case 
+    // you implement manual window resizing for the DRO later!
+    const currentWidth = droWin.el.offsetWidth; 
+    droWin.el.style.left = (window.innerWidth - currentWidth - droPadding) + 'px';
+});
 
-// 3. Bind UI Modules
-const connection = new ConnectionUI(connWin, spjs);
+// 3. Initialize the UI Components (the content)
+// Now connWin and controller are defined, so this won't crash
+const connection = new ConnectionUI(connWin, spjs, controller);
 const dro = new DRO(droWin, spjs);
-const viz = new Visualizer('bgCanvas');
+const viz = new Visualizer('bgCanvas', controller);
 
-// 4. Data Routing
-//js/main.js
-//version no. 3.7
+// Ensure target starts where the machine actually is
+machine.targetPos.x = machine.currentPos.x;
+machine.targetPos.y = machine.currentPos.y;
 
-let lineBuffer = ""; // Persistent buffer for streaming data
+// 4. Data Routing (The Switchboard)
+let lineBuffer = "";
+
+
 spjs.onData = (data) => {
     try {
         const wrapper = JSON.parse(data);
-
-        // 1. Handle Machine Data (Inside "D")
         if (wrapper.D) {
             lineBuffer += wrapper.D;
             while (lineBuffer.includes("\n")) {
@@ -40,13 +54,9 @@ spjs.onData = (data) => {
                 if (rawLine) processMachineLine(rawLine);
             }
         } 
-        
-        // 2. Handle SPJS Queue Reports (The QR/QCnt)
-        // This is the "Command Buffer" indicator you are looking for
         if (wrapper.QCnt !== undefined) {
             machine.qr = wrapper.QCnt;
-            // Update the DRO window header badge
-            droWin.setStatus(`QR: ${wrapper.QCnt}`, wrapper.QCnt > 20); 
+            droWin.setStatus(`QR: ${wrapper.QCnt}`, wrapper.QCnt > 20);
             machine.notify();
         }
     } catch (e) {
@@ -61,12 +71,8 @@ function processMachineLine(line) {
         const sr = json.sr || (json.r && json.r.sr);
         if (sr) machine.updatePosition(sr);
         if (json.r) machine.updateConfig(json.r);
-        
-        // Some TinyG versions send qr inside the machine JSON line too
-        if (json.qr !== undefined) {
-            machine.qr = json.qr;
-            droWin.setStatus(`QR: ${json.qr}`, json.qr > 20);
-            machine.notify();
-        }
     } catch (e) {}
 }
+
+// 5. Start Polling
+controller.start();
