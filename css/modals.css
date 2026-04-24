@@ -1,0 +1,168 @@
+/* css/modals.css */
+
+.modal-overlay,
+.glass-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay {
+  background: rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(4px);
+}
+.glass-modal-overlay {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+}
+
+.modal-window,
+.glass-modal-content {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-window);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-main);
+  display: flex;
+  flex-direction: column;
+}
+.modal-window {
+  width: 600px;
+  max-height: 80vh;
+}
+.glass-modal-content {
+  padding: 25px;
+  width: 350px;
+  background: rgba(250, 249, 245, 0.85);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+.glass-modal-content h3 {
+  margin-top: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  padding-bottom: 10px;
+}
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.settings-group {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.2);
+  padding: 10px;
+  margin-bottom: 15px;
+  border-radius: var(--radius-btn);
+}
+.settings-group h4 {
+  margin: 0 0 10px 0;
+  text-transform: uppercase;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  padding-bottom: 4px;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 10px;
+  border-radius: var(--radius-btn);
+}
+
+.setting-item {
+  display: flex;
+  flex-direction: column;
+}
+.setting-item label {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.setting-item input {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--glass-border);
+  color: var(--text-main);
+  font-size: 11px;
+  padding: 4px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 15px;
+}
+.form-row {
+  display: flex;
+  gap: 15px;
+}
+.form-row .form-group {
+  flex: 1;
+}
+.form-group label {
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.form-group input,
+.form-group select {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  padding: 8px;
+  border-radius: 4px;
+}
+.form-group input[type="color"] {
+  padding: 2px;
+  height: 33px;
+  cursor: pointer;
+}
+
+.modal-footer,
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.modal-footer {
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.2);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+.modal-actions {
+  margin-top: 20px;
+}
+
+.context-menu {
+  position: fixed;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 120px;
+  z-index: 1000;
+}
+.context-menu-item {
+  padding: 8px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.context-menu-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.context-menu-item.danger {
+  color: var(--accent-red);
+}

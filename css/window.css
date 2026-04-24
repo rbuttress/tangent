@@ -1,0 +1,140 @@
+/* css/window.css */
+
+.window {
+  position: absolute;
+  pointer-events: auto;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-left: 2px solid rgba(74, 144, 226, 0.3) !important;
+  border-radius: 0 !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    height 0.2s ease-out,
+    top 0.2s ease-out;
+}
+
+.window.dragging {
+  z-index: 999;
+  border-left: 2px solid rgba(74, 144, 226, 1) !important;
+  background: linear-gradient(
+    90deg,
+    rgba(74, 144, 226, 0.05) 0%,
+    transparent 100%
+  ) !important;
+  transition: none;
+}
+
+.window.minimized {
+  height: 40px !important;
+  min-height: 40px !important;
+  max-height: 40px !important;
+}
+
+.window-header {
+  height: 40px;
+  padding: 0 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: transparent !important;
+  border-bottom: 1px solid rgba(74, 144, 226, 0.2);
+  cursor: grab;
+  user-select: none;
+}
+.window-header:active {
+  cursor: grabbing;
+}
+
+.window-title-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Text Halo for legibility over CAD grid */
+.window-title,
+.status-text,
+.window-content {
+  text-shadow:
+    1px 1px 0px rgba(250, 249, 245, 0.95),
+    -1px -1px 0px rgba(250, 249, 245, 0.95),
+    1px -1px 0px rgba(250, 249, 245, 0.95),
+    -1px 1px 0px rgba(250, 249, 245, 0.95);
+}
+
+.window input,
+.window select,
+.window button.glass-btn {
+  background: transparent !important;
+  border: 1px solid rgba(74, 144, 226, 0.3) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.window input:focus,
+.window select:focus {
+  border-color: rgba(74, 144, 226, 1) !important;
+  outline: none;
+}
+
+.window-controls .min-btn {
+  background: none;
+  border: none;
+  font-weight: bold;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.2s,
+    color 0.2s;
+  color: var(--text-muted);
+}
+.window-header:hover .min-btn {
+  opacity: 1;
+}
+.window-controls .min-btn:hover {
+  color: #4a90e2;
+}
+
+.window-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  scrollbar-width: none;
+}
+.window-content::-webkit-scrollbar {
+  display: none;
+}
+
+.resizer-r,
+.resizer-l {
+  position: absolute;
+  top: 0;
+  width: 5px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 20;
+}
+.resizer-r {
+  right: 0;
+}
+.resizer-l {
+  left: 0;
+}
+
+.status-text {
+  font-size: 9px;
+  font-weight: bold;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-muted);
+}
+
+/* THE FIX: Hide the span completely if there is no text inside it */
+.status-text:empty {
+  display: none;
+}

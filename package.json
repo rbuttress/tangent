@@ -1,5 +1,11 @@
 {
   "dependencies": {
-    "express": "^5.2.1"
+    "cors": "^2.8.6",
+    "dxf-parser": "^1.1.2",
+    "dxf-writer": "^1.18.4",
+    "express": "^5.2.1",
+    "fs": "^0.0.1-security",
+    "js-clipper": "^1.0.1",
+    "path": "^0.12.7"
   }
 }

@@ -1,0 +1,154 @@
+/* css/browser.css */
+
+/* --- DXF FILE ACCORDION --- */
+details {
+  margin-left: 10px;
+  margin-bottom: 4px;
+}
+summary {
+  cursor: pointer;
+  color: var(--text-main);
+  font-weight: bold;
+  padding: 4px 0;
+  user-select: none;
+}
+summary:hover {
+  color: var(--accent-red);
+}
+
+.folder-summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-weight: bold;
+  color: var(--text-main);
+  font-size: 11px;
+  user-select: none;
+  transition: background 0.2s;
+  padding-left: calc(15px + (var(--depth, 0) * 12px)) !important;
+}
+.folder-summary:hover {
+  background: rgba(250, 249, 245, 0.1);
+}
+.folder-content {
+  margin-left: 0 !important;
+  border-left: none !important;
+}
+
+.file-item {
+  cursor: pointer;
+  padding: 8px 15px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
+  transition: background 0.2s;
+  user-select: none;
+}
+.file-item:hover {
+  background: rgba(250, 249, 245, 0.1);
+}
+.file-item.selected {
+  color: var(--accent-red);
+  font-weight: bold;
+  background: rgba(234, 43, 43, 0.1);
+  border-radius: 2px;
+}
+
+.file-item-header {
+  display: flex;
+  align-items: center;
+  font-weight: bold;
+  color: var(--text-main);
+  font-size: 11px;
+  padding-left: calc(10px + (var(--depth, 0) * 12px)) !important;
+}
+.file-item-header::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+.file-item.expanded .file-item-header::before {
+  transform: rotate(90deg);
+}
+
+.dxf-accordion-content {
+  display: none;
+  padding: 10px;
+}
+.file-item.expanded .dxf-accordion-content {
+  display: block;
+}
+
+.dxf-fabric-group {
+  margin-bottom: 15px;
+}
+.dxf-fabric-header {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  padding-bottom: 4px;
+}
+
+.dxf-pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+}
+.dxf-pattern-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: rgba(250, 249, 245, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+}
+.dxf-pattern-thumb:hover {
+  border-color: rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+.dxf-pattern-thumb canvas {
+  pointer-events: none;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* --- FABRIC MENU --- */
+.fabric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  padding: 10px 0;
+}
+.fabric-thumbnail {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(250, 249, 245, 0.4);
+  border: 2px solid transparent;
+  transition: border-color 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+.fabric-thumbnail:hover {
+  border-color: rgba(0, 0, 0, 0.2);
+}
+.fabric-thumbnail.selected {
+  border-color: var(--accent-red);
+  box-shadow: 0 0 8px rgba(234, 43, 43, 0.3);
+}
+.fabric-thumbnail canvas {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}

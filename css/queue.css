@@ -1,0 +1,190 @@
+/* css/queue.css */
+
+.queue-group-container {
+  border-left: 2px solid rgba(74, 144, 226, 0.4);
+  margin-bottom: 8px;
+  padding-left: 6px;
+}
+
+.queue-header {
+  position: relative; /* THE FIX: Anchors the floating button */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: bold;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-bottom: 1px solid rgba(74, 144, 226, 0.1);
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.queue-header:hover {
+  background: rgba(74, 144, 226, 0.1);
+}
+
+.group-items {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 8px;
+  padding-bottom: 4px;
+  padding-top: 6px;
+  scrollbar-width: none;
+}
+.group-items::-webkit-scrollbar {
+  display: none;
+}
+
+.queue-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: rgba(74, 144, 226, 0.05);
+  border: 1px solid rgba(74, 144, 226, 0.2);
+  border-radius: 4px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+.queue-item:hover {
+  background: rgba(74, 144, 226, 0.2);
+  border-color: rgba(74, 144, 226, 0.6);
+}
+
+.item-count {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  font-weight: 900;
+  color: #ffffff;
+  text-shadow:
+    0px 0px 2px rgba(0, 0, 0, 1),
+    1px 1px 1px rgba(0, 0, 0, 0.8),
+    -1px -1px 1px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.q-del-btn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  background: #1a1e23;
+  color: #ea2b2b;
+  border: 1px solid rgba(234, 43, 43, 0.5);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: bold;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.1s,
+    background 0.1s;
+  z-index: 100;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.queue-item:hover .q-del-btn {
+  opacity: 1;
+}
+.q-del-btn:hover {
+  background: rgba(234, 43, 43, 0.2);
+  border-color: #ea2b2b;
+}
+
+.header-del-btn {
+  position: absolute;
+  right: 4px; /* Floats it perfectly on the right edge */
+  top: 50%;
+  transform: translateY(-50%); /* Keeps it vertically centered */
+  width: 14px;
+  height: 14px;
+  padding: 0; /* Kills the old blocky padding */
+  background: #1a1e23;
+  color: #ea2b2b;
+  border: 1px solid rgba(234, 43, 43, 0.5);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: bold;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.1s,
+    background 0.1s;
+  z-index: 100;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.queue-header:hover .header-del-btn {
+  opacity: 1;
+}
+.header-del-btn:hover {
+  background: rgba(234, 43, 43, 0.2);
+  border-color: #ea2b2b;
+}
+
+.queue-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid rgba(74, 144, 226, 0.2);
+}
+
+.q-action-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  color: var(--text-main);
+  font-size: 16px;
+  padding: 6px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.q-action-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Play Button (Green Accent) */
+.q-action-btn.play {
+  color: #2bea64;
+  border-color: rgba(43, 234, 100, 0.3);
+  background: rgba(43, 234, 100, 0.05);
+}
+.q-action-btn.play:hover {
+  background: rgba(43, 234, 100, 0.15);
+  border-color: #2bea64;
+  box-shadow: 0 0 8px rgba(43, 234, 100, 0.2);
+}
+
+/* Stop Button (Red Accent) */
+.q-action-btn.stop {
+  color: #ea2b2b;
+  border-color: rgba(234, 43, 43, 0.3);
+  background: rgba(234, 43, 43, 0.05);
+}
+.q-action-btn.stop:hover {
+  background: rgba(234, 43, 43, 0.15);
+  border-color: #ea2b2b;
+  box-shadow: 0 0 8px rgba(234, 43, 43, 0.2);
+}
