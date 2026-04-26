@@ -1,5 +1,5 @@
 // js/ui/queue.js
-//version no. 4.2
+//version no. 4.3
 
 export class QueueMenu {
   constructor(containerEl) {
@@ -27,8 +27,25 @@ export class QueueMenu {
   }
 
   initDOM() {
+    window.NestConfig = window.NestConfig || {};
+    const currentStrategy = window.NestConfig.strategy || "TOPOGRAPHIC_SMART";
+
+    // THE FIX: Added the extra-small dropdown directly above the action buttons
     const html = `
             <div id="queue-list" style="display: flex; flex-direction: column; margin-bottom: 10px; max-height: 350px; overflow-y: auto;"></div>
+            
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
+                <select id="queue-strategy-select" style="font-size: 9px; padding: 2px 4px; background: rgba(0,0,0,0.1); border: 1px solid var(--glass-border); color: inherit; border-radius: 3px; cursor: pointer; outline: none;">
+                    <option value="TOPOGRAPHIC_SMART" ${currentStrategy === "TOPOGRAPHIC_SMART" ? "selected" : ""}>Topo: Smart</option>
+                    <option value="TOPOGRAPHIC_LEFT" ${currentStrategy === "TOPOGRAPHIC_LEFT" ? "selected" : ""}>Topo: Left</option>
+                    <option value="TOPOGRAPHIC_RIGHT" ${currentStrategy === "TOPOGRAPHIC_RIGHT" ? "selected" : ""}>Topo: Right</option>
+                    <option value="EXACT_NFP_LOCK" ${currentStrategy === "EXACT_NFP_LOCK" ? "selected" : ""}>True Shape NFP</option>
+                    <option value="CENTER_SPIRAL" ${currentStrategy === "CENTER_SPIRAL" ? "selected" : ""}>Center Spiral</option>
+                    <option value="GRAVITY_DROP" ${currentStrategy === "GRAVITY_DROP" ? "selected" : ""}>Gravity Drop</option>
+                    <option value="TOP_LEFT_SWEEP" ${currentStrategy === "TOP_LEFT_SWEEP" ? "selected" : ""}>Raster Sweep</option>
+                </select>
+            </div>
+
             <div class="queue-actions">
                 <button class="q-action-btn" id="btn-nest-settings" title="Meta-Heuristics">⚙️</button>
                 <button class="q-action-btn play" id="btn-run-nest" title="Start Nesting">▶</button>
@@ -43,6 +60,15 @@ export class QueueMenu {
     this.container.appendChild(wrapper);
 
     this.listContainer = this.container.querySelector("#queue-list");
+
+    // THE FIX: Listen for Strategy Dropdown changes and sync immediately
+    const strategySelect = wrapper.querySelector("#queue-strategy-select");
+    if (strategySelect) {
+      strategySelect.addEventListener("change", (e) => {
+        window.NestConfig.strategy = e.target.value;
+        localStorage.setItem("nestConfig", JSON.stringify(window.NestConfig));
+      });
+    }
 
     // Play Button -> Sends array to Nester
     this.container.querySelector("#btn-run-nest").onclick = () => {
@@ -159,11 +185,11 @@ export class QueueMenu {
   generateThumbnail(piece) {
     const canvas = document.createElement("canvas");
     canvas.width = 32;
-    canvas.height = 32; // THE FIX: Increased thumbnail size
+    canvas.height = 32;
     const ctx = canvas.getContext("2d");
 
     const maxDim = Math.max(piece.width, piece.height);
-    const scale = 26 / (maxDim || 1); // Left a 3px padding margin inside the canvas
+    const scale = 26 / (maxDim || 1);
 
     ctx.save();
     ctx.translate(16, 16);
@@ -199,7 +225,6 @@ export class QueueMenu {
       const gDiv = document.createElement("div");
       gDiv.className = "queue-group-container";
 
-      // Group Header (Left click add, Right click remove)
       gDiv.innerHTML = `
                 <div class="queue-header" title="Left-click to add, Right-click to remove">
                     <span class="header-title" style="flex: 1;">${groupName.toUpperCase()}</span>
@@ -210,17 +235,15 @@ export class QueueMenu {
 
       const header = gDiv.querySelector(".queue-header");
 
-      // THE FIX: Intercept Left & Right Clicks on the header
       header.onclick = (e) => {
         e.preventDefault();
         this.updateGroup(groupName, 1);
       };
       header.oncontextmenu = (e) => {
-        e.preventDefault(); // Prevents the browser menu from showing
+        e.preventDefault();
         this.updateGroup(groupName, -1);
       };
 
-      // THE FIX: Stop the delete click from bubbling up and triggering an "add"
       gDiv.querySelector(".header-del-btn").onclick = (e) => {
         e.stopPropagation();
         this.updateGroup(groupName, 0, true);
@@ -228,7 +251,6 @@ export class QueueMenu {
 
       const itemsContainer = gDiv.querySelector(".group-items");
 
-      // Render Inline Grid Items
       for (const [pieceName, item] of Object.entries(groupData.items)) {
         const iDiv = document.createElement("div");
         iDiv.className = "queue-item";
@@ -247,7 +269,6 @@ export class QueueMenu {
           .querySelector(".thumb-wrapper")
           .insertBefore(thumb, iDiv.querySelector(".item-count"));
 
-        // THE FIX: Direct manipulation for individual shapes
         iDiv.onclick = (e) => {
           e.preventDefault();
           this.updateItem(groupName, item.piece, 1);
@@ -263,12 +284,10 @@ export class QueueMenu {
 
         itemsContainer.appendChild(iDiv);
       }
-
       this.listContainer.appendChild(gDiv);
     }
   }
 
-  //version no. 2.8
   openSettingsModal() {
     const modalLayer = document.getElementById("modal-layer");
     if (!modalLayer) return;
@@ -276,36 +295,27 @@ export class QueueMenu {
     const savedConfig = JSON.parse(localStorage.getItem("nestConfig")) || {};
 
     const currentConfig = window.NestConfig || {
-      strategy: savedConfig.strategy || "TOPOGRAPHIC_SWEEP",
+      strategy: savedConfig.strategy || "TOPOGRAPHIC_SMART",
       space: savedConfig.space !== undefined ? savedConfig.space : 5,
       rotations:
         savedConfig.rotations !== undefined ? savedConfig.rotations : 2,
-
-      // --- NEW META-HEURISTICS ---
       generations: savedConfig.generations || 10,
       populationSize: savedConfig.populationSize || 10,
       elitism: savedConfig.elitism !== undefined ? savedConfig.elitism : 2,
       mutationRate:
         savedConfig.mutationRate !== undefined ? savedConfig.mutationRate : 15,
       initialSort: savedConfig.initialSort || "AREA_DESC",
+      cutRadius:
+        savedConfig.cutRadius !== undefined ? savedConfig.cutRadius : 50,
     };
 
+    // THE FIX: Removed the Strategy dropdown from the modal HTML to prevent conflicts
     const modalHtml = `
             <div class="glass-modal-overlay" id="nest-settings-overlay">
                 <div class="glass-modal-content" style="max-width: 500px;">
                     <h3>Evolutionary Meta-Heuristics</h3>
                     
                     <div class="form-row">
-                        <div class="form-group" style="flex: 2;">
-                            <label>Placement Strategy</label>
-                            <select id="nest-strategy">
-                                <option value="TOP_LEFT_SWEEP" ${currentConfig.strategy === "TOP_LEFT_SWEEP" ? "selected" : ""}>Raster Sweep</option>
-                                <option value="GRAVITY_DROP" ${currentConfig.strategy === "GRAVITY_DROP" ? "selected" : ""}>Buoyancy Slide</option>
-                                <option value="CENTER_SPIRAL" ${currentConfig.strategy === "CENTER_SPIRAL" ? "selected" : ""}>Cluster Orbit</option>
-                                <option value="EXACT_NFP_LOCK" ${currentConfig.strategy === "EXACT_NFP_LOCK" ? "selected" : ""}>Minkowski NFP</option>
-                                <option value="TOPOGRAPHIC_SWEEP" ${currentConfig.strategy === "TOPOGRAPHIC_SWEEP" ? "selected" : ""}>Topographic Wave</option>
-                            </select>
-                        </div>
                         <div class="form-group" style="flex: 1;">
                             <label>Rotations</label>
                             <select id="nest-rotations">
@@ -315,45 +325,49 @@ export class QueueMenu {
                                 <option value="360" ${currentConfig.rotations === 360 ? "selected" : ""}>Free (1°)</option>
                             </select>
                         </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
+                        <div class="form-group" style="flex: 1;">
                             <label>Seed Sorting</label>
                             <select id="nest-sort">
                                 <option value="AREA_DESC" ${currentConfig.initialSort === "AREA_DESC" ? "selected" : ""}>Largest Area First</option>
                                 <option value="RANDOM" ${currentConfig.initialSort === "RANDOM" ? "selected" : ""}>Completely Random</option>
                             </select>
                         </div>
-                        <div class="form-group">
-    <label>Spacing (mm)</label>
-    <input type="number" id="nest-space" value="${currentConfig.space}" min="0" step="any">
-</div>
                     </div>
 
                     <div class="form-row">
+                        <div class="form-group">
+                            <label>Spacing (mm)</label>
+                            <input type="number" id="nest-space" value="${currentConfig.space}" min="0" step="any">
+                        </div>
                         <div class="form-group">
                             <label>Generations (Cycles)</label>
                             <input type="number" id="nest-gen" value="${currentConfig.generations}" min="1">
                         </div>
+                    </div>
+
+                    <div class="form-row">
                         <div class="form-group">
                             <label>Population / Gen</label>
                             <input type="number" id="nest-pop" value="${currentConfig.populationSize}" min="2">
+                        </div>
+                        <div class="form-group">
+                            <label>Elitism (Survivors)</label>
+                            <input type="number" id="nest-elite" value="${currentConfig.elitism}" min="0">
                         </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Elitism (Survivors)</label>
-                            <input type="number" id="nest-elite" value="${currentConfig.elitism}" min="0">
-                        </div>
-                        <div class="form-group">
                             <label>Mutation Rate (%)</label>
                             <input type="number" id="nest-mut" value="${currentConfig.mutationRate}" min="0" max="100">
                         </div>
+                        <div class="form-group">
+                            <label style="color: var(--text-muted);">Cut Radius (mm)</label>
+                            <input type="number" id="nest-cut-radius" value="${currentConfig.cutRadius}" min="0" step="5">
+                        </div>
                     </div>
-
-                    <div class="modal-actions">
+                    
+                    <div class="modal-actions" style="margin-top: 20px;">
                         <button class="glass-btn secondary" id="btn-cancel-nest">Cancel</button>
                         <button class="glass-btn primary" id="btn-save-nest">Save & Tune Engine</button>
                     </div>
@@ -367,12 +381,15 @@ export class QueueMenu {
       (modalLayer.innerHTML = "");
 
     document.getElementById("btn-save-nest").onclick = () => {
-      // THE FIX: Parse the value first, and only default to 5 if it's literally NaN (blank)
       const spaceVal = parseFloat(document.getElementById("nest-space").value);
+      const cutRadiusVal = parseInt(
+        document.getElementById("nest-cut-radius").value,
+      );
 
+      // We preserve window.NestConfig.strategy since it's controlled by the UI now
       window.NestConfig = {
-        strategy: document.getElementById("nest-strategy").value,
-        space: isNaN(spaceVal) ? 5 : spaceVal, // <--- THE FIX
+        strategy: window.NestConfig.strategy || "TOPOGRAPHIC_SMART",
+        space: isNaN(spaceVal) ? 5 : spaceVal,
         rotations:
           parseInt(document.getElementById("nest-rotations").value) || 2,
         generations: parseInt(document.getElementById("nest-gen").value) || 10,
@@ -381,6 +398,7 @@ export class QueueMenu {
         elitism: parseInt(document.getElementById("nest-elite").value) || 2,
         mutationRate: parseInt(document.getElementById("nest-mut").value) || 15,
         initialSort: document.getElementById("nest-sort").value,
+        cutRadius: isNaN(cutRadiusVal) ? 50 : cutRadiusVal,
       };
 
       localStorage.setItem("nestConfig", JSON.stringify(window.NestConfig));
@@ -389,125 +407,5 @@ export class QueueMenu {
       );
       modalLayer.innerHTML = "";
     };
-  }
-
-  addToQueue(data, type) {
-    // Check if exact item/group already exists, increment if so
-    const existingId = type === "single" ? data.name : data[0].name + "_group";
-    const existingIndex = this.queue.findIndex((q) => q.id === existingId);
-
-    if (existingIndex > -1) {
-      this.queue[existingIndex].count += 1;
-    } else {
-      this.queue.push({
-        id: existingId,
-        type: type,
-        pieces: type === "single" ? [data] : data,
-        count: 1,
-        nestingEnabled: true,
-      });
-    }
-
-    this.updateUI();
-  }
-
-  updateItem(groupName, piece, countDelta, deleteWholeItem = false) {
-    // 1. Look up the item using direct object keys instead of an array .findIndex()
-    const item = this.groups[groupName]?.items[piece.name];
-
-    // If it doesn't exist, exit safely
-    if (!item) return;
-
-    // 2. Calculate how many we are adding or removing
-    const actualDelta = deleteWholeItem ? -item.count : countDelta;
-
-    // 3. Sync the exact number of additions/removals to the Canvas
-    for (let i = 0; i < Math.abs(actualDelta); i++) {
-      this.syncToCanvas(
-        actualDelta > 0 ? "SPAWN_INSTANCE" : "REMOVE_INSTANCE",
-        piece,
-      );
-    }
-
-    // 4. Update the Queue's internal data state
-    this.addPiece(groupName, piece, actualDelta);
-  }
-
-  updateUI() {
-    this.wrapper.innerHTML = "";
-
-    this.queue.forEach((item) => {
-      const el = document.createElement("div");
-      el.className = `queue-item ${item.type === "group" ? "queue-item-group" : ""}`;
-
-      item.pieces.forEach((piece) => {
-        const canvas = this.generateShapeCanvas(piece);
-        el.appendChild(canvas);
-      });
-
-      const controls = document.createElement("div");
-      controls.className = "queue-controls";
-      controls.innerHTML = `
-                <button class="queue-btn btn-del" title="Remove">✖</button>
-                <div class="qty-controls">
-                    <button class="btn-minus">-</button>
-                    <button class="btn-plus">+</button>
-                </div>
-            `;
-
-      const countLabel = document.createElement("div");
-      countLabel.className = "queue-count";
-      countLabel.innerText = item.count;
-
-      el.appendChild(controls);
-      el.appendChild(countLabel);
-
-      controls.querySelector(".btn-plus").onclick = () =>
-        this.updateItem(item.id, "inc");
-      controls.querySelector(".btn-minus").onclick = () =>
-        this.updateItem(item.id, "dec");
-      controls.querySelector(".btn-del").onclick = () =>
-        this.updateItem(item.id, "del");
-
-      this.wrapper.appendChild(el);
-    });
-
-    // THE FIX: Save the entire queue to memory every time the UI updates
-    localStorage.setItem("cuttingQueue", JSON.stringify(this.queue));
-
-    document.dispatchEvent(
-      new CustomEvent("QUEUE_UPDATED", { detail: this.queue }),
-    );
-  }
-
-  generateShapeCanvas(piece) {
-    const canvas = document.createElement("canvas");
-    const MAX_SIZE = 125;
-    canvas.width = MAX_SIZE;
-    canvas.height = MAX_SIZE;
-    const ctx = canvas.getContext("2d");
-
-    const scale = (MAX_SIZE - 20) / Math.max(piece.width, piece.height);
-
-    ctx.save();
-    ctx.translate(MAX_SIZE / 2, MAX_SIZE / 2);
-
-    // THE FIX: Match the thumbnail inversion logic
-    ctx.scale(scale, -scale);
-    ctx.translate(-piece.width / 2, piece.height / 2);
-
-    ctx.strokeStyle = "#4a90e2";
-    ctx.lineWidth = 2 / scale;
-
-    ctx.beginPath();
-    piece.vertices.forEach((v, i) => {
-      if (i === 0) ctx.moveTo(v.x, v.y);
-      else ctx.lineTo(v.x, v.y);
-    });
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-
-    return canvas;
   }
 }

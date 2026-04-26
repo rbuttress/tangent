@@ -105,7 +105,7 @@ export class DRO {
                     <div class="dro-row">
                         <div class="axis-control-group" style="width:30px">
                             <div class="axis-main-label" style="font-size:18px">${ax.toUpperCase()}</div>
-                            <div class="axis-hover-btns" style="left:0; right:auto;">
+                            <div class="axis-hover-btns" style="left:auto; right:0;">
                                 <button class="axis-home-trigger" data-axis="${ax}" style="display:none" id="btn-home-${ax}">H</button>
                                 <button class="axis-zero-trigger" data-axis="${ax}">0</button>
                             </div>

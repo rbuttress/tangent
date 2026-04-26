@@ -1,0 +1,61 @@
+/* css/gcode.css */
+/* //version no. 1.0 */
+
+.gcode-header-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: 10px;
+}
+
+.gcode-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gcode-job-group {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-btn);
+  overflow: hidden;
+}
+
+.gcode-job-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.5);
+  font-weight: bold;
+  font-size: 11px;
+  user-select: none;
+}
+
+.gcode-job-summary:hover {
+  background: var(--accent-warm);
+}
+
+.gcode-job-content {
+  display: none;
+  padding: 10px;
+  background: var(--glass-bg);
+}
+
+.gcode-job-group.expanded .gcode-job-content {
+  display: block;
+}
+
+.gcode-lines-wrap {
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.8);
+  color: #000000;
+  font-family: monospace;
+  font-size: 10px;
+  padding: 10px;
+  white-space: pre;
+}

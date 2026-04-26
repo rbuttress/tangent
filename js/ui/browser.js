@@ -210,8 +210,8 @@ export class FileBrowser {
       if (!cutPathEntity) continue;
 
       let fabricGroup = "UNASSIGNED";
-      if (blockName.includes("_FABRIC_")) {
-        fabricGroup = "FABRIC_" + blockName.split("_FABRIC_")[1];
+      if (blockName.includes("FABRIC_")) {
+        fabricGroup = "FABRIC_" + blockName.split("FABRIC_")[1];
       }
 
       const simplifiedVertices = this.optimizeGeometry(

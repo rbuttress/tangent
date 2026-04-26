@@ -10,9 +10,10 @@ const HEURISTIC = {
   GRAVITY_DROP: "GRAVITY_DROP",
   CENTER_SPIRAL: "CENTER_SPIRAL",
   EXACT_NFP_LOCK: "EXACT_NFP_LOCK",
-  TOPOGRAPHIC_SWEEP: "TOPOGRAPHIC_SWEEP", // Add this
+  TOPOGRAPHIC_LEFT: "TOPOGRAPHIC_LEFT",
+  TOPOGRAPHIC_RIGHT: "TOPOGRAPHIC_RIGHT",
+  TOPOGRAPHIC_SMART: "TOPOGRAPHIC_SMART",
 };
-
 // Reusable Collision Checker
 function isValidPlacement(
   scanX,
@@ -272,6 +273,8 @@ function executeNfpLock(
       Y: Math.round(-v.y * scale),
     }));
 
+    const cleanInvP = ClipperLib.Clipper.CleanPolygon(invP, 1.1);
+
     for (const placed of currentLayout) {
       const pathE = placed.piece.vertices.map((v) => ({
         X: Math.round((placed.x + v.x) * scale),
@@ -296,7 +299,12 @@ function executeNfpLock(
       for (let i = 0; i < offsetPaths.length; i++) {
         const solution = new ClipperLib.Paths();
         try {
-          ClipperLib.Clipper.MinkowskiSum(invP, offsetPaths[i], solution, true);
+          ClipperLib.Clipper.MinkowskiSum(
+            cleanInvP,
+            offsetPaths[i],
+            solution,
+            true,
+          );
 
           for (let s = 0; s < solution.length; s++) {
             for (let p = 0; p < solution[s].length; p++) {
@@ -361,7 +369,7 @@ function executeNfpLock(
   return null;
 }
 
-// STRATEGY 5: Topographic Wave (Contour-hugging Raster)
+// STRATEGY 5, 6 & 7: Topographic Wave (Left, Right, and Smart Clustering)
 function executeTopographicSweep(
   rotatedVertices,
   rBox,
@@ -371,11 +379,50 @@ function executeTopographicSweep(
   config,
   step,
   broadcast,
+  mode, // "LEFT", "RIGHT", or "SMART"
 ) {
-  const topContour = [];
+  let lastFrameTime = 0;
 
-  // Phase 1: Map the absolute ceiling for this specific shape
-  // We drop the shape down from the bounding box just until it fits inside the fabric
+  // --- THE FAST SWEEPS (LEFT / RIGHT) ---
+  // Bypasses the heavy contour mapping. Drops a horizontal wave from the sky.
+  // Because it scans top-to-bottom, the first valid spot is inherently the highest.
+  if (mode === "LEFT" || mode === "RIGHT") {
+    for (let scanY = fBox.y; scanY >= fBox.y - fBox.h + rBox.h; scanY -= step) {
+      let startX = mode === "LEFT" ? fBox.x : fBox.x + fBox.w - rBox.w;
+      let endX = mode === "LEFT" ? fBox.x + fBox.w - rBox.w : fBox.x;
+      let dx = mode === "LEFT" ? step : -step;
+
+      for (
+        let scanX = startX;
+        mode === "LEFT" ? scanX <= endX : scanX >= endX;
+        scanX += dx
+      ) {
+        if (Date.now() - lastFrameTime > 16) {
+          broadcast(scanX, scanY);
+          lastFrameTime = Date.now();
+        }
+
+        if (
+          isValidPlacement(
+            scanX,
+            scanY,
+            rotatedVertices,
+            rBox,
+            fabric,
+            currentLayout,
+            config,
+          )
+        ) {
+          return { x: scanX, y: scanY - rBox.y };
+        }
+      }
+    }
+    return null;
+  }
+
+  // --- THE SMART SWEEP (CONTOUR HUGGING & CLUSTERING) ---
+  // Phase 1: Map the absolute ceiling contour for this specific shape
+  const topContour = [];
   for (let x = fBox.x; x <= fBox.x + fBox.w - rBox.w; x += step) {
     let y = fBox.y;
     while (y >= fBox.y - fBox.h + rBox.h) {
@@ -384,35 +431,57 @@ function executeTopographicSweep(
         y: v.y + y - rBox.y,
       }));
       if (isPolygonInside(testPoly, fabric.edgeProfile, config.space)) {
-        topContour.push({ x: x, startY: y }); // Save the ceiling coordinate
+        topContour.push({ x: x, startY: y });
         break;
       }
       y -= step;
     }
   }
 
-  // Phase 2: Push the wave downward
-  let lastFrameTime = 0;
+  if (topContour.length === 0) return null;
 
-  // We sweep a depth offset from 0 down to the bottom of the fabric
+  // Phase 2: Define the X-Axis Search Sequence
+  let xIndices = [];
+  if (currentLayout.length === 0) {
+    // Piece 1 must ALWAYS find the absolute highest peak on the fabric.
+    for (let i = 0; i < topContour.length; i++) xIndices.push(i);
+    xIndices.sort((a, b) => topContour[b].startY - topContour[a].startY);
+  } else {
+    // Subsequent Pieces: ALWAYS anchor to the VERY FIRST placed piece.
+    const firstPieceX = currentLayout[0].x;
+    let startIndex = 0;
+    let minDist = Infinity;
+
+    for (let i = 0; i < topContour.length; i++) {
+      const dist = Math.abs(topContour[i].x - firstPieceX);
+      if (dist < minDist) {
+        minDist = dist;
+        startIndex = i;
+      }
+    }
+
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    for (let i = 0; i < topContour.length; i++) {
+      let idx = (startIndex + i * dir) % topContour.length;
+      if (idx < 0) idx += topContour.length;
+      xIndices.push(idx);
+    }
+  }
+
+  // Phase 3: Push the wave downward
   for (let depth = 0; depth <= fBox.h; depth += step) {
-    // At the current depth, scan across our contour columns
-    for (const col of topContour) {
+    for (const idx of xIndices) {
+      const col = topContour[idx];
       const testX = col.x;
-      const testY = col.startY - depth; // Apply the depth offset to the ceiling
+      const testY = col.startY - depth;
 
-      // Don't test if the wave has pushed this column below the fabric
       if (testY < fBox.y - fBox.h + rBox.h) continue;
 
-      // Non-blocking 60FPS UI Broadcast
       if (Date.now() - lastFrameTime > 16) {
         broadcast(testX, testY);
         lastFrameTime = Date.now();
       }
 
-      // Test for collisions against other pieces.
-      // Because we are iterating depth row-by-row, the VERY FIRST valid spot
-      // we find is mathematically guaranteed to be the highest possible fit!
       if (
         isValidPlacement(
           testX,
@@ -665,6 +734,104 @@ function rotatePolygon(vertices, angleDegrees) {
   });
 }
 
+// Generates a machinable cut line tracing the bottom of the nested pieces AND the fabric edge
+function generateBottomCutLine(
+  layout,
+  fBox,
+  fabric,
+  resolution = 5,
+  cutRadius = 50,
+) {
+  const cols = Math.ceil(fBox.w / resolution) + 1;
+  const rawProfile = new Array(cols);
+
+  // 1. Initialize the baseline using the ACTUAL top edge of the fabric
+  for (let i = 0; i < cols; i++) {
+    const scanX = fBox.x + i * resolution;
+    let highestY = -Infinity;
+
+    for (let j = 0; j < fabric.edgeProfile.length; j++) {
+      const p1 = fabric.edgeProfile[j];
+      const p2 = fabric.edgeProfile[(j + 1) % fabric.edgeProfile.length];
+      const minX = Math.min(p1.x, p2.x);
+      const maxX = Math.max(p1.x, p2.x);
+
+      // Find intersections with the fabric polygon at this X column
+      if (scanX >= minX && scanX <= maxX && minX !== maxX) {
+        const t = (scanX - p1.x) / (p2.x - p1.x);
+        const y = p1.y + t * (p2.y - p1.y);
+        if (y > highestY) highestY = y; // Grab the absolute top edge
+      }
+    }
+    rawProfile[i] = highestY !== -Infinity ? highestY : fBox.y;
+  }
+
+  // 2. Rasterize the bottom-most points of all placed pieces
+  for (const inst of layout) {
+    const poly = inst.piece.vertices.map((v) => ({
+      x: inst.x + v.x,
+      y: inst.y + v.y,
+    }));
+    for (let i = 0; i < poly.length; i++) {
+      const p1 = poly[i],
+        p2 = poly[(i + 1) % poly.length];
+      const minX = Math.min(p1.x, p2.x),
+        maxX = Math.max(p1.x, p2.x);
+
+      if (minX === maxX) continue; // Skip vertical lines
+
+      const startCol = Math.max(0, Math.floor((minX - fBox.x) / resolution));
+      const endCol = Math.min(
+        cols - 1,
+        Math.ceil((maxX - fBox.x) / resolution),
+      );
+
+      for (let col = startCol; col <= endCol; col++) {
+        const scanX = fBox.x + col * resolution;
+        if (scanX >= minX && scanX <= maxX) {
+          const t = (scanX - p1.x) / (p2.x - p1.x);
+          const y = p1.y + t * (p2.y - p1.y);
+          if (y < rawProfile[col]) rawProfile[col] = y; // Save lowest Y
+        }
+      }
+    }
+  }
+
+  // 3. Minimum Bend Radius Filter (Morphological Erosion + Average)
+  const windowSize = Math.max(1, Math.floor(cutRadius / resolution));
+  const lowered = new Array(cols);
+
+  // Push the line away from the pieces to guarantee we don't cut them
+  for (let i = 0; i < cols; i++) {
+    let localMin = rawProfile[i];
+    for (let w = -windowSize; w <= windowSize; w++) {
+      if (i + w >= 0 && i + w < cols) {
+        if (rawProfile[i + w] < localMin) localMin = rawProfile[i + w];
+      }
+    }
+    lowered[i] = localMin - 5; // 5mm global safety margin
+  }
+
+  // 4. Smooth the pushed line to create the final machinable curve
+  const smoothed = new Array(cols);
+  for (let i = 0; i < cols; i++) {
+    let sum = 0,
+      count = 0;
+    for (let w = -windowSize; w <= windowSize; w++) {
+      if (i + w >= 0 && i + w < cols) {
+        sum += lowered[i + w];
+        count++;
+      }
+    }
+    smoothed[i] = sum / count;
+  }
+
+  const finalLine = [];
+  for (let i = 0; i < cols; i++)
+    finalLine.push({ x: fBox.x + i * resolution, y: smoothed[i] });
+  return finalLine;
+}
+
 /**
  *  ________      _______       ________       _______       _________    ___      ________      ________
  * |\   ____\    |\  ___ \     |\   ___  \    |\  ___ \     |\___   ___\ |\  \    |\   ____\    |\   ____\
@@ -829,7 +996,7 @@ self.onmessage = function (e) {
             resolutionStep,
             broadcast,
           );
-        else if (config.strategy === HEURISTIC.TOPOGRAPHIC_SWEEP)
+        else if (config.strategy === HEURISTIC.TOPOGRAPHIC_LEFT)
           placement = executeTopographicSweep(
             rotatedVertices,
             rBox,
@@ -839,6 +1006,31 @@ self.onmessage = function (e) {
             config,
             resolutionStep,
             broadcast,
+            "LEFT",
+          );
+        else if (config.strategy === HEURISTIC.TOPOGRAPHIC_RIGHT)
+          placement = executeTopographicSweep(
+            rotatedVertices,
+            rBox,
+            fBox,
+            fabric,
+            currentLayout,
+            config,
+            resolutionStep,
+            broadcast,
+            "RIGHT",
+          );
+        else if (config.strategy === HEURISTIC.TOPOGRAPHIC_SMART)
+          placement = executeTopographicSweep(
+            rotatedVertices,
+            rBox,
+            fBox,
+            fabric,
+            currentLayout,
+            config,
+            resolutionStep,
+            broadcast,
+            "SMART",
           );
         else
           placement = executeTopLeftSweep(
@@ -871,35 +1063,89 @@ self.onmessage = function (e) {
       }
 
       if (allPlaced) {
-        let gMinX = Infinity,
-          gMaxX = -Infinity,
-          gMinY = Infinity,
-          gMaxY = -Infinity;
         let totalUsedArea = 0;
-
         currentLayout.forEach((inst) => {
           const worldPoly = inst.piece.vertices.map((v) => ({
             x: inst.x + v.x,
             y: inst.y + v.y,
           }));
           totalUsedArea += getPolygonArea(worldPoly);
-          worldPoly.forEach((p) => {
-            if (p.x < gMinX) gMinX = p.x;
-            if (p.x > gMaxX) gMaxX = p.x;
-            if (p.y < gMinY) gMinY = p.y;
-            if (p.y > gMaxY) gMaxY = p.y;
-          });
         });
 
-        const rect = { minX: gMinX, maxX: gMaxX, minY: gMinY, maxY: gMaxY };
-        const clippedFabric = clipPolygonAgainstRect(fabric.edgeProfile, rect);
-        const usableArea = getPolygonArea(clippedFabric);
+        // 1. Generate the machinable cut line
+        const cutLineRadius = config.cutRadius || 50;
+        const cutLine = generateBottomCutLine(
+          currentLayout,
+          fBox,
+          fabric, // <-- THE FIX: Pass the fabric object here
+          5,
+          cutLineRadius,
+        );
+
+        // 2. Build a closed polygon representing the consumed slice of the table
+        const slicePoly = [
+          { X: Math.round(fBox.x * 1000), Y: Math.round(fBox.y * 1000) },
+          {
+            X: Math.round((fBox.x + fBox.w) * 1000),
+            Y: Math.round(fBox.y * 1000),
+          },
+        ];
+        // Trace the cut line backwards to close the loop
+        for (let i = cutLine.length - 1; i >= 0; i--) {
+          slicePoly.push({
+            X: Math.round(cutLine[i].x * 1000),
+            Y: Math.round(cutLine[i].y * 1000),
+          });
+        }
+
+        // 3. Perfect Boolean Intersection using Clipper
+        const subj = new ClipperLib.Paths();
+        subj.push(slicePoly);
+        const clip = new ClipperLib.Paths();
+        const fabPoly = fabric.edgeProfile.map((p) => ({
+          X: Math.round(p.x * 1000),
+          Y: Math.round(p.y * 1000),
+        }));
+        clip.push(fabPoly);
+
+        const cleanSubj = ClipperLib.Clipper.SimplifyPolygons(
+          subj,
+          ClipperLib.PolyFillType.pftNonZero,
+        );
+        const cleanClip = ClipperLib.Clipper.SimplifyPolygons(
+          clip,
+          ClipperLib.PolyFillType.pftNonZero,
+        );
+
+        const solution = new ClipperLib.Paths();
+        const c = new ClipperLib.Clipper();
+        c.StrictlySimple = true; // Force strict parsing
+
+        // Use the cleaned paths
+        c.AddPaths(cleanSubj, ClipperLib.PolyType.ptSubject, true);
+        c.AddPaths(cleanClip, ClipperLib.PolyType.ptClip, true);
+        c.Execute(
+          ClipperLib.ClipType.ctIntersection,
+          solution,
+          ClipperLib.PolyFillType.pftNonZero,
+          ClipperLib.PolyFillType.pftNonZero,
+        );
+
+        // 4. Calculate final area of the true Boolean shape
+        let usableArea = 0;
+        for (let i = 0; i < solution.length; i++) {
+          usableArea +=
+            Math.abs(ClipperLib.Clipper.Area(solution[i])) / 1000000;
+        }
+
         const score = usableArea === 0 ? 0 : (totalUsedArea / usableArea) * 100;
 
+        // THE FIX: Save the cutLine directly into the result object so it persists to local storage!
         const resultObj = {
           score: score,
           layout: currentLayout,
           sequence: attemptOrder,
+          cutLine: cutLine,
         };
         generationResults.push(resultObj);
 
@@ -921,6 +1167,7 @@ self.onmessage = function (e) {
           id: idx + 1,
           score: r.score,
           layout: r.layout,
+          cutLine: r.cutLine,
         }));
       }
 

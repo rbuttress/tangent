@@ -15,6 +15,7 @@ import { QueueMenu } from "./ui/queue.js";
 import { Nester } from "./core/nester.js";
 import { CursorHUD } from "./ui/cursor.js";
 import { RankingMenu } from "./ui/ranking.js";
+import { GCodeManager } from "./ui/gcode.js";
 
 // 1. Initialize core background logic
 const spjs = new SpjsClient();
@@ -27,6 +28,8 @@ const cursorHUD = new CursorHUD();
 const connWin = new WidgetWindow("conn-widget", "Connection", 5, 5, 450, 1000);
 const filesWin = new WidgetWindow("files-widget", "Files", 5, 170, 300, 600);
 filesWin.flexGrow = true; // Fill vertical space
+
+window.NestConfig = JSON.parse(localStorage.getItem("nestConfig")) || {};
 
 const fabricsWin = new WidgetWindow(
   "fabrics-widget",
@@ -54,19 +57,20 @@ const droWin = new WidgetWindow(
   "DRO",
   window.innerWidth - 305,
   5,
-  300,
+  320,
   450,
 );
 
 const gcodeWin = new WidgetWindow(
   "gcode-widget",
-  "G-Code",
+  "G-Code Exporter",
   window.innerWidth - 305,
-  220,
-  295,
-  150,
+  window.innerHeight - 410,
+  305,
+  400,
 );
-gcodeWin.flexGrow = true; // Fill remaining vertical space
+gcodeWin.flexGrow = true;
+const gcodeManager = new GCodeManager(gcodeWin);
 
 const rankingWin = new WidgetWindow(
   "ranking-widget",
@@ -135,6 +139,45 @@ spjs.onData = (data) => {
     connection.logToConsole(data);
   }
 };
+
+document.addEventListener("MACHINE_FEEDBACK", (e) => {
+  const rawLine = e.detail;
+
+  // Log to the UI console
+  connection.logToConsole(rawLine);
+
+  try {
+    const json = JSON.parse(rawLine);
+
+    // Update DRO and Machine State
+    const sr = json.sr || (json.r && json.r.sr);
+    if (sr) {
+      machine.updatePosition(sr);
+      // Update UI with real TinyG Queue (qr), NOT SPJS Queue (QCnt)
+      if (sr.qr !== undefined) {
+        droWin.setStatus(`Buffer: ${sr.qr}`, sr.qr > 10);
+      }
+    }
+
+    if (json.qr !== undefined) {
+      droWin.setStatus(`Buffer: ${json.qr}`, json.qr > 10);
+    }
+
+    if (json.r) machine.updateConfig(json.r);
+
+    machine.notify();
+  } catch (err) {
+    // Non-JSON noise
+  }
+});
+
+// Auto-minimize connection window on successful activity
+document.addEventListener("STREAM_GCODE_JOB", () => {
+  if (!window.hasAutoMinimized) {
+    connWin.setMinimized(true);
+    window.hasAutoMinimized = true;
+  }
+});
 
 function processMachineLine(line) {
   connection.logToConsole(line);

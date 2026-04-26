@@ -7,6 +7,7 @@
 @import url("./queue.css");
 @import url("./modals.css");
 @import url("./hud.css");
+@import url("./gcode.css");
 
 /* --- 1. LOCAL FONT SETUP --- */
 @font-face {
