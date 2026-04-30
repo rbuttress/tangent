@@ -59,11 +59,7 @@
 .window-title,
 .status-text,
 .window-content {
-  text-shadow:
-    1px 1px 0px rgba(250, 249, 245, 0.95),
-    -1px -1px 0px rgba(250, 249, 245, 0.95),
-    1px -1px 0px rgba(250, 249, 245, 0.95),
-    -1px 1px 0px rgba(250, 249, 245, 0.95);
+  text-shadow: none;
 }
 
 .window input,

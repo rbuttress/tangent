@@ -1,5 +1,5 @@
 // js/ui/browser.js
-//version no. 2.2
+//version no. 2.3
 
 export class FileBrowser {
   constructor(containerEl, serverUrl = "http://localhost:3000") {
@@ -8,6 +8,20 @@ export class FileBrowser {
     this.fileTree = [];
     this.parsedFilesCache = {};
     this.expandedGroups = new Set();
+
+    // --- THE FIX: Curve Tessellation & Optimization Constants ---
+    this.curveConfig = {
+      // How many line segments make up a perfect 360-degree circle?
+      // 36 = rough (10° steps), 72 = smooth (5° steps), 360 = ultra-smooth (1° steps)
+      circleSegments: 360 / 2,
+
+      // Safety limit: Never generate microscopic segments that choke the TinyG buffer (mm)
+      minSegLength: 0.5,
+
+      // Decimation limit (radians): Delete intermediate points on flat lines.
+      // 0.05 rad = ~2.8 degrees. Any angle smaller than this gets merged.
+      collinearAngle: 0.05,
+    };
 
     if (!this.container) {
       console.error("FileBrowser requires a container element.");
@@ -26,11 +40,8 @@ export class FileBrowser {
     `;
   }
 
-  // --- THE FIX: Recursive Time Sorting ---
   sortTreeByDate(nodes) {
-    // 1. Sort the current level by time (Descending: newest first)
     nodes.sort((a, b) => {
-      // Fallback to 0 (1970) if the server didn't send a date, pushing it to the bottom
       const timeA = new Date(
         a.mtime || a.lastModified || a.date || 0,
       ).getTime();
@@ -40,7 +51,6 @@ export class FileBrowser {
       return timeB - timeA;
     });
 
-    // 2. Drill down and sort all child folders recursively
     nodes.forEach((node) => {
       if (node.children && node.children.length > 0) {
         this.sortTreeByDate(node.children);
@@ -56,7 +66,6 @@ export class FileBrowser {
       const response = await fetch(`${this.serverUrl}/api/files`);
       const rawTree = await response.json();
 
-      // THE FIX: Sort the tree before assigning it
       this.fileTree = this.sortTreeByDate(rawTree);
 
       listContainer.innerHTML = "";
@@ -95,7 +104,6 @@ export class FileBrowser {
         const item = document.createElement("div");
         item.className = "file-item";
 
-        // THE FIX: Format the date cleanly (e.g., "Oct 24, 2:30 PM")
         let dateStr = "";
         const rawDate = node.mtime || node.lastModified || node.date;
         if (rawDate) {
@@ -112,7 +120,6 @@ export class FileBrowser {
             });
         }
 
-        // THE FIX: Inject the date label below the filename inside the flex header
         item.innerHTML = `
             <div class="file-item-header" style="align-items: flex-start;">
                 <div style="display: flex; flex-direction: column; gap: 2px;">
@@ -166,34 +173,123 @@ export class FileBrowser {
     }
   }
 
-  optimizeGeometry(vertices, distanceTolerance = 2, angleTolerance = 0.1) {
+  // --- THE FIX: DXF Bulge (Arc) Interpolation ---
+  // Transforms native DXF arcs into CNC-ready line segments based on your curveConfig
+  interpolateBulges(vertices) {
+    const expanded = [];
+
+    for (let i = 0; i < vertices.length; i++) {
+      const pt = vertices[i];
+      expanded.push({ x: pt.x, y: pt.y, isCurve: false });
+
+      if (pt.bulge && pt.bulge !== 0) {
+        const nextPt = vertices[(i + 1) % vertices.length];
+
+        // Prevent bulging back to the start if the polyline isn't truly closed
+        if (
+          i === vertices.length - 1 &&
+          Math.hypot(pt.x - nextPt.x, pt.y - nextPt.y) < 0.01
+        )
+          continue;
+
+        const arcPoints = this.calculateBulge(pt, nextPt, pt.bulge);
+        expanded.push(...arcPoints);
+      }
+    }
+    return expanded;
+  }
+
+  calculateBulge(p1, p2, bulge) {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const chordLen = Math.hypot(dx, dy);
+    if (chordLen === 0) return [];
+
+    const radius = Math.abs(chordLen / (2 * Math.sin(2 * Math.atan(bulge))));
+    const sagitta = Math.abs((chordLen / 2) * bulge);
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+    const centerOffset = radius - sagitta;
+
+    const isClockwise = bulge < 0;
+    const perpX = (-dy / chordLen) * centerOffset * (isClockwise ? -1 : 1);
+    const perpY = (dx / chordLen) * centerOffset * (isClockwise ? -1 : 1);
+
+    const cx = midX + perpX;
+    const cy = midY + perpY;
+
+    let startAngle = Math.atan2(p1.y - cy, p1.x - cx);
+    let endAngle = Math.atan2(p2.y - cy, p2.x - cx);
+
+    let sweep = endAngle - startAngle;
+    if (isClockwise && sweep > 0) sweep -= Math.PI * 2;
+    if (!isClockwise && sweep < 0) sweep += Math.PI * 2;
+
+    const fractionOfCircle = Math.abs(sweep) / (Math.PI * 2);
+    let segments = Math.max(
+      1,
+      Math.ceil(this.curveConfig.circleSegments * fractionOfCircle),
+    );
+
+    const arcLength = radius * Math.abs(sweep);
+    if (arcLength / segments < this.curveConfig.minSegLength) {
+      segments = Math.max(
+        1,
+        Math.ceil(arcLength / this.curveConfig.minSegLength),
+      );
+    }
+
+    const points = [];
+    const angleStep = sweep / segments;
+    // Skip first point to prevent duplicating the origin vertex
+    for (let i = 1; i < segments; i++) {
+      const currentAngle = startAngle + angleStep * i;
+      points.push({
+        x: cx + Math.cos(currentAngle) * radius,
+        y: cy + Math.sin(currentAngle) * radius,
+        isCurve: true,
+      });
+    }
+    return points;
+  }
+
+  // --- THE FIX: Smart Geometry Optimization ---
+  // Only deletes points if they lie on a flat, straight line.
+  // Keeps all organic curves completely intact.
+  optimizeGeometry(vertices) {
     if (!vertices || vertices.length < 3) return vertices;
 
-    const optimized = [];
+    const optimized = [vertices[0]];
     let lastKept = vertices[0];
-    optimized.push({ x: lastKept.x, y: lastKept.y, isCurve: false });
 
     for (let i = 1; i < vertices.length - 1; i++) {
       const pt = vertices[i];
       const next = vertices[i + 1];
+
+      // ALWAYS keep points that we know are part of a true curve
+      if (pt.isCurve) {
+        optimized.push(pt);
+        lastKept = pt;
+        continue;
+      }
+
+      // Filter out overlapping glitch points
       const dist = Math.hypot(pt.x - lastKept.x, pt.y - lastKept.y);
+      if (dist < 0.1) continue;
 
-      if (dist >= distanceTolerance) {
-        const angle1 = Math.atan2(pt.y - lastKept.y, pt.x - lastKept.x);
-        const angle2 = Math.atan2(next.y - pt.y, next.x - pt.x);
-        let angleDiff = Math.abs(angle1 - angle2);
-        if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
+      const angle1 = Math.atan2(pt.y - lastKept.y, pt.x - lastKept.x);
+      const angle2 = Math.atan2(next.y - pt.y, next.x - pt.x);
+      let angleDiff = Math.abs(angle1 - angle2);
+      if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
 
-        if (angleDiff >= angleTolerance) {
-          const isCurve = angleDiff < 0.5;
-          optimized.push({ x: pt.x, y: pt.y, isCurve: isCurve });
-          lastKept = pt;
-        }
+      // If the angle deviates beyond our collinear tolerance, it's a corner or organic curve. Keep it!
+      if (angleDiff > this.curveConfig.collinearAngle) {
+        optimized.push({ x: pt.x, y: pt.y, isCurve: angleDiff < 0.5 });
+        lastKept = pt;
       }
     }
 
-    const last = vertices[vertices.length - 1];
-    optimized.push({ x: last.x, y: last.y, isCurve: false });
+    optimized.push(vertices[vertices.length - 1]);
     return optimized;
   }
 
@@ -201,11 +297,9 @@ export class FileBrowser {
     const processedFile = { fabrics: {}, maxDimension: 0 };
     if (!rawJson.blocks) return processedFile;
 
-    const CURVE_TOLERANCE = 1.0;
-
     for (const [blockName, block] of Object.entries(rawJson.blocks)) {
       const cutPathEntity = block.entities.find(
-        (e) => e.type === "POLYLINE" && e.layer === "1",
+        (e) => e.type === "POLYLINE" || e.type === "LWPOLYLINE",
       );
       if (!cutPathEntity) continue;
 
@@ -214,10 +308,13 @@ export class FileBrowser {
         fabricGroup = "FABRIC_" + blockName.split("FABRIC_")[1];
       }
 
-      const simplifiedVertices = this.optimizeGeometry(
+      // 1. Expand any mathematical arcs (bulges) hidden in the DXF
+      const interpolatedVertices = this.interpolateBulges(
         cutPathEntity.vertices,
-        CURVE_TOLERANCE,
       );
+
+      // 2. Run the smart optimizer to clean up flat lines but preserve the curves
+      const simplifiedVertices = this.optimizeGeometry(interpolatedVertices);
 
       let minX = Infinity,
         minY = Infinity,
@@ -241,6 +338,7 @@ export class FileBrowser {
       const zeroedVertices = simplifiedVertices.map((v) => ({
         x: v.x - minX,
         y: v.y - maxY,
+        isCurve: v.isCurve,
       }));
 
       if (!processedFile.fabrics[fabricGroup])

@@ -1,12 +1,11 @@
 // js/ui/ranking.js
-//version no. 1.4
+//version no. 1.6
 
 export class RankingMenu {
   constructor(containerEl) {
     this.container = containerEl;
     if (!this.container) return;
 
-    // THE FIX: Pull historical state from localStorage on boot
     this.currentTopIterations =
       JSON.parse(localStorage.getItem("savedNestingResults")) || [];
     this.activeResult =
@@ -17,7 +16,6 @@ export class RankingMenu {
     this.initDOM();
     this.initHeaderProgress();
 
-    // THE FIX: If we booted up with saved data, immediately render it!
     if (
       this.currentTopIterations.length > 0 ||
       this.retainedResults.length > 0
@@ -43,7 +41,6 @@ export class RankingMenu {
     });
   }
 
-  // THE FIX: Helper to save the entire leaderboard state to the browser
   saveState() {
     localStorage.setItem(
       "savedNestingResults",
@@ -61,11 +58,9 @@ export class RankingMenu {
 
   initDOM() {
     this.container.innerHTML = `
-      <div id="ranking-list" style="display: flex; flex-direction: column; gap: 4px;">
-        <div style="color: var(--text-muted); font-size: 10px; font-style: italic; padding: 4px;">
-          Awaiting Genetic Algorithm...
+        <div id="ranking-list" style="display: flex; flex-direction: column; gap: 1px; width: 100%;">
+            <span style="font-size: 10px; color: var(--text-muted); font-style: italic; padding: 4px;">Awaiting nesting data...</span>
         </div>
-      </div>
     `;
     this.listContainer = this.container.querySelector("#ranking-list");
   }
@@ -107,7 +102,7 @@ export class RankingMenu {
       .closest(".window")
       ?.querySelector(".status-text");
     if (statusText) {
-      statusText.innerText = `GEN ${progress.currentGen}/${progress.totalGens}`;
+      statusText.innerText = `${progress.currentGen}/${progress.totalGens}`;
       statusText.style.color = "var(--text-main)";
     }
   }
@@ -140,51 +135,59 @@ export class RankingMenu {
     }));
   }
 
-  renderRow(result, isRetainedSection) {
+  // THE FIX: Added 'index' parameter to explicitly display current rank
+  renderRow(result, isRetainedSection, index) {
     const row = document.createElement("div");
 
-    const isActive =
-      this.activeResult &&
-      this.activeResult.score === result.score &&
-      this.activeResult.id === result.id;
+    // Identity is now safely tracked by the permanent ID
+    const isActive = this.activeResult && this.activeResult.id === result.id;
 
-    row.className = `hud-iteration ${isActive ? "active" : ""}`;
+    row.style.cssText = `
+        position: relative; 
+        cursor: pointer; 
+        height: 16px; 
+        display: flex; 
+        align-items: center; 
+        padding: 0 4px; 
+        font-family: monospace; 
+        font-size: 10px;
+        color: ${isActive ? "var(--text-main)" : "var(--text-muted)"};
+    `;
 
-    const barAlpha = isRetainedSection ? "0.15" : "0.25";
-    const displayId = result.isRetained ? result.displayId : result.id;
+    const barAlpha = isRetainedSection ? "0.15" : "0.3";
+    const activeColor = "rgba(43, 234, 100, 0.35)";
+    const barColor = isActive ? activeColor : `rgba(74, 144, 226, ${barAlpha})`;
+
+    // Labeling Logic
+    const rankStr = isRetainedSection ? "PREV" : `#${index + 1}`;
+    const iterLabel =
+      result.gen !== undefined && result.pop !== undefined
+        ? `${result.gen}.${result.pop}`
+        : result.displayId || result.id;
 
     row.innerHTML = `
-        <div class="hud-iteration-bar" style="width: ${result.score}%; background: rgba(74, 144, 226, ${barAlpha});"></div>
-        <div class="hud-iteration-content" style="padding: 4px 10px;">
-            <span class="iter-number" style="font-family: monospace;">ID: ${displayId}</span>
-            <span class="iter-score">${result.score.toFixed(2)}% Yield</span>
+        <div style="position: absolute; top: 0; left: 0; height: 100%; width: ${result.score}%; background: ${barColor}; z-index: 0; pointer-events: none;"></div>
+        <div style="position: relative; z-index: 1; ${isActive ? "font-weight: bold; color: #2BEA64;" : ""} display: flex; justify-content: space-between; width: 100%;">
+            <span>${rankStr} &nbsp; ${result.score.toFixed(2)}%</span>
+            <span style="opacity: 0.6;">${iterLabel}</span>
         </div>
-      `;
+    `;
 
     row.onclick = () => {
       this.activeResult = result;
       this.saveState();
-
-      document
-        .querySelectorAll(".hud-iteration")
-        .forEach((el) => el.classList.remove("active"));
-      row.classList.add("active");
-
-      // THE FIX: Send the whole result object so the G-Code compiler gets the cutLine!
+      this.renderLeaderboard();
       document.dispatchEvent(
         new CustomEvent("PREVIEW_ITERATION", { detail: result }),
       );
     };
 
-    row.onmouseenter = () => {
+    row.onmouseenter = () =>
       document.dispatchEvent(
         new CustomEvent("HOVER_PREVIEW_START", { detail: result }),
       );
-    };
-
-    row.onmouseleave = () => {
+    row.onmouseleave = () =>
       document.dispatchEvent(new CustomEvent("HOVER_PREVIEW_END"));
-    };
 
     return row;
   }
@@ -201,20 +204,18 @@ export class RankingMenu {
     }
 
     // 1. Render Live Stream
-    this.currentTopIterations.forEach((result) => {
-      this.listContainer.appendChild(this.renderRow(result, false));
+    this.currentTopIterations.forEach((result, index) => {
+      this.listContainer.appendChild(this.renderRow(result, false, index));
     });
 
     // 2. Render Historical Snapshots
     if (this.retainedResults.length > 0) {
-      const divider = document.createElement("div");
-      divider.style.cssText =
-        "font-size: 9px; color: var(--text-muted); text-transform: uppercase; margin: 8px 0 4px 4px; border-bottom: 1px solid rgba(74, 144, 226, 0.2); padding-bottom: 2px; font-weight: bold;";
-      divider.innerText = "Previous Run Elites";
-      this.listContainer.appendChild(divider);
+      const spacer = document.createElement("div");
+      spacer.style.height = "8px";
+      this.listContainer.appendChild(spacer);
 
-      this.retainedResults.forEach((result) => {
-        this.listContainer.appendChild(this.renderRow(result, true));
+      this.retainedResults.forEach((result, index) => {
+        this.listContainer.appendChild(this.renderRow(result, true, index));
       });
     }
   }

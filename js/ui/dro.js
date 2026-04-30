@@ -1,15 +1,18 @@
 //js/ui/dro.js
-//version no. 1.1
+//version no. 1.3
 import { machine } from "../core/machine.js";
 
 export class DRO {
   constructor(win, spjs) {
     this.win = win;
     this.spjs = spjs;
+
+    this.editingAxis = null;
+    this.editString = "";
+
     this.render();
     this.attachEvents();
 
-    // Replace minimize with E-Stop
     this.win.replaceMinWithEStop(() => this.triggerFeedHold());
 
     machine.onUpdate(() => this.updateUI());
@@ -19,19 +22,15 @@ export class DRO {
     const port = localStorage.getItem("last-port");
     if (!port) return;
 
-    // 1. Send immediate Feedhold to TinyG
-    // ! is a real-time character, it does not need \n
     this.spjs.send(`send ${port} !\n`);
 
     const btn = this.win.el.querySelector(".estop-btn");
     btn.classList.add("active");
 
-    // 2. Show the context menu
     this.showHoldMenu(btn);
   }
 
   showHoldMenu(anchorEl) {
-    // Remove existing if any
     const existing = document.querySelector(".hold-menu");
     if (existing) existing.remove();
 
@@ -50,20 +49,13 @@ export class DRO {
 
     document.getElementById("hold-resume").onclick = () => {
       const port = localStorage.getItem("last-port");
-      // ~ is Cycle Start (Resume)
       this.spjs.send(`send ${port} ~\n`);
       this.cleanupHold(menu);
     };
 
     document.getElementById("hold-clear").onclick = () => {
       const port = localStorage.getItem("last-port");
-      // % is Hard Reset / Clear Buffer
-      // Also send a feedhold to be safe
       this.spjs.send(`send ${port} %\n`);
-
-      // Clear our local application buffer if you have one
-      // machine.jobQueue = [];
-
       this.cleanupHold(menu);
       console.log("Job Cleared. Coordinates preserved.");
     };
@@ -76,6 +68,8 @@ export class DRO {
   }
 
   render() {
+    const arrows = { x: "←0", y: "↑0", z: "↘0", a: "↺0" };
+
     this.win.content.innerHTML = `
             <div class="dro-column-wrap">
                 <div class="jog-pad">
@@ -105,13 +99,15 @@ export class DRO {
                     <div class="dro-row">
                         <div class="axis-control-group" style="width:30px">
                             <div class="axis-main-label" style="font-size:18px">${ax.toUpperCase()}</div>
-                            <div class="axis-hover-btns" style="left:auto; right:0;">
-                                <button class="axis-home-trigger" data-axis="${ax}" style="display:none" id="btn-home-${ax}">H</button>
-                                <button class="axis-zero-trigger" data-axis="${ax}">0</button>
+                            
+                            <div class="axis-hover-btns" style="left:auto; right:0; display:flex; gap:2px; align-items:center;">
+                                <button class="axis-go-zero-trigger" data-axis="${ax}" style="width: 22px; padding: 0;" title="Go To Zero">${arrows[ax]}</button>
+                                <button class="axis-zero-trigger" data-axis="${ax}" style="width: 22px; padding: 0;" title="Set to Zero">∅</button>
+                                <button class="axis-home-trigger" data-axis="${ax}" style="display:none; width: 22px; padding: 0;" id="btn-home-${ax}" title="Home Axis">♜</button>
                             </div>
                         </div>
                         <div class="dro-readout">
-                            <span id="dro-val-${ax}">0.0000</span>
+                            <span id="dro-val-${ax}" class="dro-val-edit" data-axis="${ax}" style="cursor:text;" title="Click to manually edit position">0.0000</span>
                         </div>
                     </div>
                 `,
@@ -120,7 +116,6 @@ export class DRO {
             </div>
         `;
 
-    // Move state indicator to header (matching v3.2)
     const headerArea = this.win.el.querySelector(".window-title-area");
     if (!headerArea.querySelector("#header-machine-state")) {
       const stateIndicator = document.createElement("span");
@@ -136,27 +131,143 @@ export class DRO {
     this.slider = c.querySelector("#jog-slider");
     this.readout = c.querySelector("#jog-dist-readout");
 
-    // Logarithmic Slider Update
     this.slider.oninput = () => {
       const dist = this.getLogDistance(this.slider.value);
       this.readout.innerText = dist.toFixed(dist < 1 ? 2 : 1);
     };
 
-    // Jog Buttons
     c.querySelectorAll(".jog-btn[data-axis]").forEach((btn) => {
       btn.onmousedown = (e) =>
         this.handleJog(btn.dataset.axis, parseInt(btn.dataset.dir), e);
     });
 
-    // Homing & Zeroing
     c.querySelector("#btn-home-all").onclick = () => this.homeAll();
+
+    c.querySelectorAll(".axis-go-zero-trigger").forEach((btn) => {
+      btn.onclick = () => this.goZeroAxis(btn.dataset.axis);
+    });
+
     c.querySelectorAll(".axis-zero-trigger").forEach((btn) => {
       btn.onclick = () => this.zeroAxis(btn.dataset.axis);
     });
+
     c.querySelectorAll(".axis-home-trigger").forEach((btn) => {
       btn.onclick = () => this.homeAxis(btn.dataset.axis);
     });
+
+    // --- THE FIX: Inline Editing Triggers ---
+    c.querySelectorAll(".dro-val-edit").forEach((span) => {
+      span.onclick = (e) => {
+        e.stopPropagation(); // Prevent the global document click from immediately canceling
+        this.startEditing(span.dataset.axis);
+      };
+    });
+
+    // Cancel edit if user clicks anywhere else on the screen
+    document.addEventListener("click", () => {
+      if (this.editingAxis) this.cancelEditing();
+    });
+
+    // Capture phase listener: stops 'main.js' from triggering tools when typing numbers
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (!this.editingAxis) return;
+
+        e.stopPropagation(); // Prevent canvas hotkeys (like 'v', 'd')
+
+        if (e.key === "Backspace" || e.key === "Enter" || e.key === "Escape") {
+          e.preventDefault(); // Stop browser scrolling/navigating
+        }
+
+        if (e.key === "Escape") {
+          this.cancelEditing();
+        } else if (e.key === "Enter") {
+          this.commitEditing();
+        } else if (e.key === "Backspace") {
+          this.editString = this.editString.slice(0, -1);
+          this.updateEditDisplay();
+        } else if (/^[0-9.-]$/.test(e.key)) {
+          if (e.key === "." && this.editString.includes(".")) return;
+          if (e.key === "-" && this.editString.length > 0) return; // Only allow '-' at the very start
+
+          // CRITICAL Z-AXIS SAFETY: Force a negative sign if they type a positive number into Z
+          if (this.editingAxis === "z") {
+            if (e.key !== "-" && this.editString === "") {
+              this.editString = "-";
+            }
+          }
+
+          this.editString += e.key;
+          this.updateEditDisplay();
+        }
+      },
+      { capture: true },
+    );
   }
+
+  // --- INLINE DRO EDITING ---
+
+  startEditing(axis) {
+    if (this.editingAxis) this.cancelEditing(); // Clean up old edit if switching directly
+
+    this.editingAxis = axis;
+    this.editString = "";
+    const span = this.win.content.querySelector(`#dro-val-${axis}`);
+    span.style.color = "#ff3c3c";
+    this.updateEditDisplay();
+  }
+
+  cancelEditing() {
+    if (!this.editingAxis) return;
+    const span = this.win.content.querySelector(`#dro-val-${this.editingAxis}`);
+    if (span) span.style.color = "";
+    this.editingAxis = null;
+    this.updateUI(); // Snap back to true machine coordinates immediately
+  }
+
+  commitEditing() {
+    if (!this.editingAxis) return;
+    const port = localStorage.getItem("last-port");
+
+    let val = parseFloat(this.editString);
+    if (port && !isNaN(val)) {
+      // Ultimate Z-Axis safety check before dispatch
+      if (this.editingAxis === "z") {
+        val = -Math.abs(val);
+      }
+      this.spjs.send(
+        `send ${port} G90 G0 ${this.editingAxis.toUpperCase()}${val.toFixed(4)}\n`,
+      );
+      console.log(
+        `UI JOG: Rapid ${this.editingAxis.toUpperCase()} to ${val.toFixed(4)}`,
+      );
+    }
+    this.cancelEditing();
+  }
+
+  updateEditDisplay() {
+    if (!this.editingAxis) return;
+    const span = this.win.content.querySelector(`#dro-val-${this.editingAxis}`);
+
+    // Handle the visual mask for typing
+    if (this.editString === "") {
+      span.innerText = "0.0000";
+      return;
+    }
+    if (this.editString === "-") {
+      span.innerText = "-0.0000";
+      return;
+    }
+
+    let val = parseFloat(this.editString);
+    if (!isNaN(val)) {
+      if (this.editingAxis === "z") val = -Math.abs(val);
+      span.innerText = val.toFixed(4); // Automatically pads out to standard DRO look
+    }
+  }
+
+  // -------------------------
 
   getLogDistance(val) {
     const minVal = Math.log(0.01);
@@ -168,42 +279,38 @@ export class DRO {
   handleJog(axis, dir, event) {
     if (!this.spjs) return;
 
-    // 1. Get step size from local slider
     let step = this.getLogDistance(this.slider.value);
     if (event.shiftKey) step *= 10;
     if (event.ctrlKey || event.metaKey) step *= 100;
 
     const port = localStorage.getItem("last-port");
     if (port) {
-      // Calculate the signed movement amount
       const moveAmt = (dir * step).toFixed(4);
-
-      // CRITICAL FIX:
-      // 1. G91 puts the machine in Relative mode.
-      // 2. G0 executes the rapid move by the moveAmt.
-      // 3. G90 immediately puts the machine back in Absolute mode for safety.
       const cmd = `G91 G0 ${axis.toUpperCase()}${moveAmt}\nG90`;
-
       this.spjs.send(`send ${port} ${cmd}\n`);
-
       console.log(`UI JOG: ${axis.toUpperCase()} ${moveAmt}mm (Relative)`);
+    }
+  }
+
+  goZeroAxis(axis) {
+    const port = localStorage.getItem("last-port");
+    if (port) {
+      this.spjs.send(`send ${port} G90 G0 ${axis.toUpperCase()}0\n`);
+      console.log(`UI JOG: Rapid ${axis.toUpperCase()} to 0`);
     }
   }
 
   zeroAxis(axis) {
     const port = localStorage.getItem("last-port");
-    if (port) this.spjs.send(`send ${port} G28.3 ${axis}0\n`);
+    if (port) this.spjs.send(`send ${port} G28.3 ${axis.toUpperCase()}0\n`);
   }
 
   homeAxis(axis) {
     const port = localStorage.getItem("last-port");
     if (!port) return;
 
-    // Send home command
     this.spjs.send(`send ${port} G28.2 ${axis.toUpperCase()}0\n`);
 
-    // Force a status report request after a short delay to ensure
-    // the UI syncs with the new zero position
     setTimeout(() => {
       this.spjs.send(`send ${port} {"sr":""}\n`);
     }, 1000);
@@ -213,7 +320,6 @@ export class DRO {
     const port = localStorage.getItem("last-port");
     if (!port) return;
 
-    // Ordered sequence: Z -> A -> X (Y is intentionally excluded to be zeroed instead)
     const axes = ["z", "a", "x"];
     let cmd = "";
     axes.forEach((ax) => {
@@ -227,24 +333,24 @@ export class DRO {
       this.spjs.send(`send ${port} ${cmd.trim()}\n`);
     }
 
-    // Always zero the Y axis shortly after initiating the homing cycle
     setTimeout(() => {
       this.spjs.send(`send ${port} G28.3 Y0\n`);
     }, 100);
 
-    // Long-running homing cycles need multiple sync points
     [2000, 5000, 10000].forEach((delay) => {
       setTimeout(() => this.spjs.send(`send ${port} {"sr":""}\n`), delay);
     });
   }
 
   updateUI() {
-    // Update Axis Numbers
     ["x", "y", "z", "a"].forEach((ax) => {
       const valEl = this.win.content.querySelector(`#dro-val-${ax}`);
-      if (valEl) valEl.innerText = machine.currentPos[ax].toFixed(4);
 
-      // Update Home Button Visibility
+      // THE FIX: Do not overwrite the value if the user is actively typing in it
+      if (valEl && this.editingAxis !== ax) {
+        valEl.innerText = machine.currentPos[ax].toFixed(4);
+      }
+
       const homeBtn = this.win.content.querySelector(`#btn-home-${ax}`);
       const conf = machine.config.axes[ax];
       if (homeBtn && conf) {
@@ -252,8 +358,6 @@ export class DRO {
       }
     });
 
-    // Calculate distance to ghost
-    // Update Header Status
     const stateEl = document.getElementById("header-machine-state");
     const STATE_MAP = {
       0: "INIT",

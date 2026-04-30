@@ -1,5 +1,5 @@
 // js/ui/queue.js
-//version no. 4.3
+//version no. 4.4
 
 export class QueueMenu {
   constructor(containerEl) {
@@ -12,6 +12,7 @@ export class QueueMenu {
 
     document.addEventListener("PATTERN_SELECTED", (e) => {
       const piece = e.detail.piece;
+      piece.queueGroup = "Selected Patterns"; // THE FIX: Tag it for Undo!
       this.addPiece("Selected Patterns", piece, 1);
       this.syncToCanvas("SPAWN_INSTANCE", piece);
     });
@@ -20,17 +21,71 @@ export class QueueMenu {
       const pieces = e.detail.pieces;
       const groupName = e.detail.groupName.replace(/_/g, " ");
       pieces.forEach((piece) => {
+        piece.queueGroup = groupName; // THE FIX: Tag it for Undo!
         this.addPiece(groupName, piece, 1);
         this.syncToCanvas("SPAWN_INSTANCE", piece);
       });
+    });
+
+    // THE FIX: Listen to the Canvas History Manager to reconstruct the entire Queue on Undo
+    document.addEventListener("SYNC_QUEUE", (e) => {
+      const instances = e.detail;
+      this.groups = {}; // Complete wipe
+
+      instances.forEach((inst) => {
+        if (inst.isDiy) return; // Hide manual drawings from queue
+
+        const piece = inst.piece;
+        const groupName = piece.queueGroup || "Restored Patterns";
+
+        if (!this.groups[groupName]) this.groups[groupName] = { items: {} };
+        if (!this.groups[groupName].items[piece.name]) {
+          this.groups[groupName].items[piece.name] = { piece: piece, count: 0 };
+        }
+        this.groups[groupName].items[piece.name].count++;
+      });
+
+      this.saveState();
+      this.render();
+    });
+
+    document.addEventListener("REMOVE_INSTANCE", (e) => {
+      // Only process deletions that originated from the Canvas (which include an exact instance ID)
+      if (!e.detail || !e.detail.id || !e.detail.piece) return;
+
+      const pieceName = e.detail.piece.name;
+
+      // THE FIX: Use this.groups instead of this.queueData
+      for (const groupName in this.groups) {
+        const group = this.groups[groupName];
+
+        if (group.items && group.items[pieceName]) {
+          // Decrement the count
+          group.items[pieceName].count--;
+
+          // If none are left, remove the item entirely
+          if (group.items[pieceName].count <= 0) {
+            delete group.items[pieceName];
+          }
+
+          // If the whole fabric group is now empty, remove the group
+          if (Object.keys(group.items).length === 0) {
+            delete this.groups[groupName];
+          }
+
+          // Save and update the Queue UI
+          this.saveState();
+          this.render();
+          break;
+        }
+      }
     });
   }
 
   initDOM() {
     window.NestConfig = window.NestConfig || {};
-    const currentStrategy = window.NestConfig.strategy || "TOPOGRAPHIC_SMART";
+    const currentStrategy = window.NestConfig.strategy || "TOPOGRAPHIC_LEFT";
 
-    // THE FIX: Added the extra-small dropdown directly above the action buttons
     const html = `
             <div id="queue-list" style="display: flex; flex-direction: column; margin-bottom: 10px; max-height: 350px; overflow-y: auto;"></div>
             
@@ -61,7 +116,6 @@ export class QueueMenu {
 
     this.listContainer = this.container.querySelector("#queue-list");
 
-    // THE FIX: Listen for Strategy Dropdown changes and sync immediately
     const strategySelect = wrapper.querySelector("#queue-strategy-select");
     if (strategySelect) {
       strategySelect.addEventListener("change", (e) => {
@@ -309,7 +363,6 @@ export class QueueMenu {
         savedConfig.cutRadius !== undefined ? savedConfig.cutRadius : 50,
     };
 
-    // THE FIX: Removed the Strategy dropdown from the modal HTML to prevent conflicts
     const modalHtml = `
             <div class="glass-modal-overlay" id="nest-settings-overlay">
                 <div class="glass-modal-content" style="max-width: 500px;">
@@ -386,7 +439,6 @@ export class QueueMenu {
         document.getElementById("nest-cut-radius").value,
       );
 
-      // We preserve window.NestConfig.strategy since it's controlled by the UI now
       window.NestConfig = {
         strategy: window.NestConfig.strategy || "TOPOGRAPHIC_SMART",
         space: isNaN(spaceVal) ? 5 : spaceVal,

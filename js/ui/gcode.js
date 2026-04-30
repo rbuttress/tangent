@@ -1,19 +1,20 @@
 // js/ui/gcode.js
-//version no. 5.6
+//version no. 8.0
+
+import { Slicer } from "../core/slicer.js";
 
 export class GCodeManager {
-  constructor(win) {
+  constructor(win, canvasRef) {
     this.win = win;
-    this.activeNest = null;
+    this.canvas = canvasRef;
     this.slicedJobs = [];
-    this.cutLineJob = null;
 
     this.activeJobId = null;
     this.isPaused = false;
 
     this.isAutoplaying = false;
     this.autoplayIndex = 0;
-    this.autoplayTimeout = null;
+    this.waitingForNextJob = false;
 
     this.config = JSON.parse(localStorage.getItem("gcodeConfig")) || {
       zRapid: -10,
@@ -30,39 +31,66 @@ export class GCodeManager {
       bandHeight: 350,
     };
 
+    this.injectStyles();
     this.initDOM();
 
-    document.addEventListener("PREVIEW_ITERATION", (e) => {
-      this.activeNest = e.detail;
-      this.slicedJobs = [];
-      this.cutLineJob = null;
+    document.addEventListener("SPAWN_INSTANCE", () => this.renderHeader());
+    document.addEventListener("REMOVE_INSTANCE", () => this.renderHeader());
+    document.addEventListener("SELECTION_CHANGED", () => this.renderHeader());
+    document.addEventListener("TOOL_CHANGED", () => this.renderHeader());
+
+    document.addEventListener("CUTS_CLEARED_UI_UPDATE", () => {
+      this.refreshAllControls();
       this.renderHeader();
-      document.dispatchEvent(
-        new CustomEvent("RENDER_GCODE_SOLID", { detail: this.activeNest }),
-      );
+    });
+
+    document.addEventListener("CLEAR_GCODE_ENTIRELY", () => {
+      this.clearGCodeData();
+    });
+
+    // The Visualizer will broadcast this event smoothly as the physical machine moves
+    document.addEventListener("JOB_PROGRESS", (e) => {
+      this.updateGcodeTextHighlight(e.detail.jobId, e.detail.lineIndex);
+    });
+
+    document.addEventListener("ROUTINE_START", () => {
+      if (!this.isAutoplaying && this.slicedJobs.length > 0)
+        this.startPlayAll();
+    });
+
+    document.addEventListener("ROUTINE_NEXT", () => {
+      if (this.isAutoplaying && this.waitingForNextJob) {
+        this.waitingForNextJob = false;
+        this.playNextSubJob();
+      }
     });
 
     document.addEventListener("JOB_COMPLETED", () => {
+      const finishedJobId = this.activeJobId;
       this.activeJobId = null;
       this.isPaused = false;
+
+      if (finishedJobId) {
+        document.dispatchEvent(
+          new CustomEvent("SUBJOB_COMPLETED", { detail: finishedJobId }),
+        );
+      }
+
       this.refreshAllControls();
+      this.renderHeader();
 
       if (this.isAutoplaying) {
         this.autoplayIndex++;
         if (this.autoplayIndex < this.slicedJobs.length) {
           console.log(
-            `%c[G-CODE] Autoplay: Waiting 5s before next job...`,
-            "color: #aaffaa",
+            `%c[G-CODE] Routine paused. Waiting to continue...`,
+            "color: #ffaa00",
           );
-          this.autoplayTimeout = setTimeout(() => {
-            this.playNextSubJob();
-          }, 5000);
+          this.waitingForNextJob = true;
         } else {
-          console.log(
-            `%c[G-CODE] Autoplay Sequence Complete.`,
-            "color: #2BEA64",
-          );
+          console.log(`%c[G-CODE] Routine Complete.`, "color: #2BEA64");
           this.isAutoplaying = false;
+          this.waitingForNextJob = false;
         }
       }
     });
@@ -70,61 +98,132 @@ export class GCodeManager {
     document.addEventListener("ABORT_JOB", () => {
       this.isAutoplaying = false;
       clearTimeout(this.autoplayTimeout);
+      this.activeJobId = null;
+      document.dispatchEvent(new CustomEvent("JOB_STOPPED"));
+      this.refreshAllControls();
     });
+  }
+
+  injectStyles() {
+    if (!document.getElementById("gcode-dynamic-styles")) {
+      const style = document.createElement("style");
+      style.id = "gcode-dynamic-styles";
+      style.innerHTML = `
+            .gcode-job-group { display: flex; flex-direction: column; border: 1px solid var(--glass-border); border-radius: 4px; background: rgba(0,0,0,0.2); overflow: hidden; transition: flex 0.2s; }
+            .gcode-job-group.expanded { flex: 1; min-height: 150px; }
+            .gcode-job-summary { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; cursor: pointer; font-size: 11px; background: rgba(255,255,255,0.05); }
+            .gcode-job-summary:hover { background: rgba(255,255,255,0.1); }
+            .gcode-job-content { display: none; flex: 1; overflow-y: auto; background: rgba(0,0,0,0.4); font-size: 10px; padding: 4px 0; scroll-behavior: smooth; position: relative; }
+            .gcode-job-group.expanded .gcode-job-content { display: block; }
+            .gcl { display: flex; justify-content: space-between; align-items: center; padding: 0 8px; font-family: monospace; cursor: crosshair; transition: background 0.1s; min-height: 18px; }
+            .gcl.executed { background: rgba(43, 234, 100, 0.1); color: rgba(43, 234, 100, 0.7); }
+            .gcl.active-line { background: rgba(43, 234, 100, 0.3); color: #2BEA64; font-weight: bold; border-left: 2px solid #2BEA64; }
+            .gcl-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+            .gcl-controls { display: none; gap: 4px; }
+            .gcl:hover { background: rgba(255, 0, 255, 0.4); color: #fff; }
+            .gcl:hover .gcl-controls { display: flex; }
+            .gcl-btn { background: transparent; border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; border-radius: 3px; font-size: 9px; padding: 1px 4px; }
+            .gcl-btn:hover { background: rgba(255,255,255,0.3); }
+            .gcode-job-content::-webkit-scrollbar { width: 6px; }
+            .gcode-job-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+        `;
+      document.head.appendChild(style);
+    }
   }
 
   initDOM() {
     this.win.content.innerHTML = `
+        <div style="display: flex; flex-direction: column; height: 100%;">
             <div class="gcode-header-controls" id="gc-header"></div>
-            <div class="gcode-tree" id="gc-tree" style="display: flex; flex-direction: column; gap: 5px;"></div>
-        `;
+            <div class="gcode-tree" id="gc-tree" style="display: flex; flex-direction: column; gap: 5px; flex: 1; overflow: hidden; margin-top: 5px;"></div>
+        </div>
+    `;
     this.headerEl = this.win.content.querySelector("#gc-header");
     this.treeEl = this.win.content.querySelector("#gc-tree");
     this.renderHeader();
   }
 
-  // --- THE FIX: Unified Clear Method ---
+  updateGcodeTextHighlight(jobId, currentLineIdx) {
+    const group = this.treeEl.querySelector(`[data-job-id="${jobId}"]`);
+    if (!group || !group.classList.contains("expanded")) return;
+
+    const lines = group.querySelectorAll(".gcl");
+    let activeElement = null;
+
+    lines.forEach((lineEl) => {
+      const idx = parseInt(lineEl.dataset.idx);
+      lineEl.classList.remove("active-line", "executed");
+
+      if (idx < currentLineIdx) {
+        lineEl.classList.add("executed");
+      } else if (idx === currentLineIdx) {
+        lineEl.classList.add("active-line");
+        activeElement = lineEl;
+      }
+    });
+
+    if (activeElement) {
+      activeElement.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  expandJobAccordion(jobId) {
+    this.win.content.querySelectorAll(".gcode-job-group").forEach((el) => {
+      if (el.dataset.jobId === jobId) el.classList.add("expanded");
+      else el.classList.remove("expanded");
+    });
+  }
+
   clearGCodeData() {
-    this.activeNest = null;
     this.slicedJobs = [];
-    this.cutLineJob = null;
     this.activeJobId = null;
     this.isPaused = false;
     this.isAutoplaying = false;
     clearTimeout(this.autoplayTimeout);
-
     this.treeEl.innerHTML = "";
     this.renderHeader();
     document.dispatchEvent(new CustomEvent("CLEAR_GCODE_PREVIEW"));
   }
 
   renderHeader() {
-    if (!this.activeNest) {
-      this.headerEl.innerHTML = `<span style="font-size: 10px; color: var(--text-muted);">Select a nest to generate.</span>`;
+    const hasPieces = this.canvas && this.canvas.placedInstances.length > 0;
+    if (!hasPieces) {
+      this.headerEl.innerHTML = `<span style="font-size: 10px; color: var(--text-muted);">Add patterns or draw lines on the canvas to generate.</span>`;
       return;
     }
 
     const hasJobs = this.slicedJobs.length > 0;
+    const isSelectionActive = this.canvas.selection.items.size > 0;
+    const genBtnText = isSelectionActive
+      ? "Generate Selection"
+      : "Generate All";
+
+    const hasCuts =
+      this.canvas &&
+      (this.canvas.completedJobs.size > 0 ||
+        Object.values(this.canvas.maxLineByJob).some((v) => v > -1));
+    const clearBtnText = hasCuts ? "Clear Cuts" : "Clear GCode";
 
     this.headerEl.innerHTML = `
         <div style="display: flex; flex-direction: column; width: 100%;">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <div style="display: flex; gap: 5px;">
                     <button class="gear-btn" id="btn-gc-settings" title="G-Code Settings">⚙️</button>
-                    <button class="glass-btn secondary" id="btn-gc-clear" style="font-size: 10px;">Clear</button>
+                    <button class="glass-btn secondary" id="btn-gc-clear" style="font-size: 10px;">${clearBtnText}</button>
+                    ${hasJobs ? `<button class="glass-btn primary" id="btn-gen-cut-line" style="font-size: 10px; ${!hasCuts ? "opacity:0.3; pointer-events:none;" : ""}">Gen Cut Line</button>` : ""}
                 </div>
                 <div style="display: flex; gap: 5px;">
                     ${hasJobs ? `<button class="glass-btn primary" id="btn-gc-play-all" style="font-size: 10px; background: rgba(100, 100, 255, 0.2); color: #8888ff; border-color: rgba(100, 100, 255, 0.4);" title="Play All Sub-Jobs">▶</button>` : ""}
                     ${hasJobs ? `<button class="glass-btn primary" id="btn-gc-dl" style="font-size: 10px; background: rgba(43, 234, 100, 0.2); color: #2BEA64; border-color: rgba(43, 234, 100, 0.4);" title="Save to File">.NC</button>` : ""}
-                    <button class="glass-btn primary" id="btn-gc-gen" style="font-size: 10px;">${hasJobs ? "Regen" : "Generate G-Code"}</button>
+                    <button class="glass-btn primary" id="btn-gc-gen" style="font-size: 10px; ${isSelectionActive ? "background: rgba(74, 144, 226, 0.2); color: #4a90e2; border-color: rgba(74, 144, 226, 0.5);" : ""}">${hasJobs ? "Regen" : genBtnText}</button>
                 </div>
             </div>
             ${
               hasJobs
                 ? `
-            <div style="display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--glass-border); padding-top: 10px; margin-top: 10px; width: 100%;">
-                <span style="font-size: 10px; color: var(--text-muted); white-space: nowrap;">FEEDRATE OVERRIDE</span>
-                <input type="range" id="gc-feed-override" min="0.25" max="15" step="0.25" value="1.0" style="flex: 1;">
+            <div style="display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--glass-border); padding-top: 5px; margin-top: 5px; width: 100%;">
+                <span style="font-size: 9px; color: var(--text-muted); white-space: nowrap;">FEEDRATE OVERRIDE</span>
+                <input type="range" id="gc-feed-override" min="0.25" max="15" step="0.25" value="1.0" style="flex: 1; height: 10px;">
                 <span id="gc-feed-val" style="font-size: 10px; width: 35px; text-align: right; color: var(--text-muted);">1.00x</span>
             </div>`
                 : ""
@@ -135,18 +234,28 @@ export class GCodeManager {
     document.getElementById("btn-gc-settings").onclick = () =>
       this.openSettingsModal();
 
-    // THE FIX: Route the header Clear button to the new method
-    document.getElementById("btn-gc-clear").onclick = () =>
-      this.clearGCodeData();
+    document.getElementById("btn-gc-clear").onclick = () => {
+      document.dispatchEvent(new CustomEvent("CLEAR_SMART"));
+    };
 
     document.getElementById("btn-gc-gen").onclick = () =>
-      this.processNestIntoGCode();
+      this.generateGCodeFromCanvas();
 
     if (hasJobs) {
       document.getElementById("btn-gc-dl").onclick = () =>
         this.downloadMasterGCode();
       document.getElementById("btn-gc-play-all").onclick = () =>
         this.startPlayAll();
+
+      const genBtn = document.getElementById("btn-gen-cut-line");
+      if (genBtn && hasCuts) {
+        genBtn.onmouseenter = () =>
+          document.dispatchEvent(new CustomEvent("PREVIEW_GLOBAL_CUT_LINE"));
+        genBtn.onmouseleave = () =>
+          document.dispatchEvent(new CustomEvent("CLEAR_GLOBAL_CUT_LINE"));
+        genBtn.onclick = () =>
+          document.dispatchEvent(new CustomEvent("COMMIT_GLOBAL_CUT_LINE"));
+      }
 
       const slider = document.getElementById("gc-feed-override");
       const valDisp = document.getElementById("gc-feed-val");
@@ -178,11 +287,229 @@ export class GCodeManager {
     const job = this.slicedJobs[this.autoplayIndex];
     this.activeJobId = job.id;
     this.isPaused = false;
+    this.expandJobAccordion(job.id);
+    document.dispatchEvent(new CustomEvent("JOB_STARTED", { detail: job.id }));
     this.sendJobToMachine(job.gcode);
     this.refreshAllControls();
   }
 
+  generateGCodeFromCanvas() {
+    let targets =
+      this.canvas.selection.items.size > 0
+        ? this.canvas.selection.getAll()
+        : this.canvas.placedInstances;
+    if (targets.length === 0) return;
+
+    const ox = this.canvas.loadedFabric ? this.canvas.fabricOffset.x : 0;
+    const oy = this.canvas.loadedFabric ? this.canvas.fabricOffset.y : 0;
+
+    const slicer = new Slicer(this.config, ox, oy);
+    this.slicedJobs = slicer.process(targets);
+
+    document.dispatchEvent(
+      new CustomEvent("SIMULATOR_UPDATE", {
+        detail: { jobs: this.slicedJobs, cutJob: null },
+      }),
+    );
+    document.dispatchEvent(
+      new CustomEvent("RENDER_GCODE_SOLID", { detail: true }),
+    );
+
+    this.renderTree();
+    this.renderHeader();
+  }
+
+  sendJobToMachine(gcodeString) {
+    const cleanGcode =
+      gcodeString
+        .split("\n")
+        .map((line) => line.split(";")[0].trim())
+        .filter((line) => line.length > 0)
+        .join("\n") + "\n";
+    document.dispatchEvent(
+      new CustomEvent("STREAM_GCODE_JOB", { detail: cleanGcode }),
+    );
+  }
+
+  refreshAllControls() {
+    this.win.content.querySelectorAll(".gcode-job-group").forEach((group) => {
+      const jobId = group.dataset.jobId;
+      const actionsDiv = group.querySelector(".job-actions");
+      actionsDiv.innerHTML = this.getJobControlsHTML(jobId);
+      this.attachControlListeners(group, jobId);
+    });
+  }
+
+  getJobControlsHTML(jobId) {
+    if (this.activeJobId === null)
+      return `<button class="glass-btn primary btn-play" style="padding: 2px 8px;">▶</button>`;
+    if (this.activeJobId === jobId) {
+      if (this.isPaused)
+        return `<button class="glass-btn primary btn-resume" style="padding: 2px 8px; background: rgba(43, 234, 100, 0.2); color: #2BEA64;">▶</button> <button class="glass-btn secondary btn-stop" style="padding: 2px 8px; background: rgba(255, 60, 60, 0.2); color: #ff3c3c; border-color: rgba(255, 60, 60, 0.4);">⏹</button>`;
+      return `<button class="glass-btn secondary btn-pause" style="padding: 2px 8px; background: rgba(255, 170, 0, 0.2); color: #ffaa00; border-color: rgba(255, 170, 0, 0.4);">⏸</button> <button class="glass-btn secondary btn-stop" style="padding: 2px 8px; background: rgba(255, 60, 60, 0.2); color: #ff3c3c; border-color: rgba(255, 60, 60, 0.4);">⏹</button>`;
+    }
+    return `<button class="glass-btn secondary" style="padding: 2px 8px; opacity: 0.3; pointer-events: none;">Busy</button>`;
+  }
+
+  attachControlListeners(group, jobId) {
+    const playBtn = group.querySelector(".btn-play");
+    const pauseBtn = group.querySelector(".btn-pause");
+    const resumeBtn = group.querySelector(".btn-resume");
+    const stopBtn = group.querySelector(".btn-stop");
+
+    const job = this.slicedJobs.find((j) => j.id === jobId);
+
+    if (playBtn)
+      playBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.activeJobId = jobId;
+        this.isPaused = false;
+        this.expandJobAccordion(jobId);
+        document.dispatchEvent(
+          new CustomEvent("CLEAR_JOB_CUTS", { detail: jobId }),
+        );
+        document.dispatchEvent(
+          new CustomEvent("JOB_STARTED", { detail: jobId }),
+        );
+        this.sendJobToMachine(job.gcode);
+        this.refreshAllControls();
+      };
+    if (pauseBtn)
+      pauseBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.isPaused = true;
+        document.dispatchEvent(new CustomEvent("PAUSE_JOB"));
+        this.refreshAllControls();
+      };
+    if (resumeBtn)
+      resumeBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.isPaused = false;
+        document.dispatchEvent(new CustomEvent("RESUME_JOB"));
+        this.refreshAllControls();
+      };
+    if (stopBtn)
+      stopBtn.onclick = (e) => {
+        e.stopPropagation();
+        document.dispatchEvent(new CustomEvent("ABORT_JOB"));
+        document.dispatchEvent(new CustomEvent("JOB_STOPPED"));
+      };
+  }
+
+  renderJobBlock(job) {
+    const group = document.createElement("div");
+    group.className = "gcode-job-group";
+    group.dataset.jobId = job.id;
+
+    const match = job.id.match(/\d+/);
+    const titleLabel = `${match ? match[0] : "?"}. ${Math.min(job.topY, job.bottomY).toFixed(0)} - ${Math.max(job.topY, job.bottomY).toFixed(0)}`;
+
+    const gcodeHtml = job.linesData
+      .map((line) => {
+        if (!line.text.trim()) return "";
+        return `<div class="gcl" data-idx="${line.n}"><span class="gcl-text">${line.text}</span><div class="gcl-controls"><button class="gcl-btn btn-goto" data-x="${line.x}" data-y="${line.y}" data-a="${line.a}" title="Go to start of line">✦</button><button class="gcl-btn btn-playfrom" data-idx="${line.n}" title="Play from here">►</button></div></div>`;
+      })
+      .join("");
+
+    group.innerHTML = `<div class="gcode-job-summary"><span>${titleLabel}</span><div style="display: flex;" class="job-actions">${this.getJobControlsHTML(job.id)}</div></div><div class="gcode-job-content">${gcodeHtml}</div>`;
+
+    const summary = group.querySelector(".gcode-job-summary");
+    summary.onclick = (e) => {
+      if (e.target.closest(".job-actions")) return;
+      const wasExp = group.classList.contains("expanded");
+      this.win.content
+        .querySelectorAll(".gcode-job-group")
+        .forEach((el) => el.classList.remove("expanded"));
+      if (!wasExp) group.classList.add("expanded");
+    };
+
+    this.attachControlListeners(group, job.id);
+    const contentDiv = group.querySelector(".gcode-job-content");
+
+    contentDiv.addEventListener("click", (e) => {
+      const gotoBtn = e.target.closest(".btn-goto");
+      if (gotoBtn) {
+        e.stopPropagation();
+        const x = parseFloat(gotoBtn.dataset.x),
+          y = parseFloat(gotoBtn.dataset.y),
+          a = parseFloat(gotoBtn.dataset.a);
+        document.dispatchEvent(
+          new CustomEvent("STREAM_GCODE_JOB", {
+            detail: `G90 G0 Z0\nG90 G0 A${a.toFixed(4)}\nG90 G0 X${x.toFixed(4)} Y${y.toFixed(4)}\n`,
+          }),
+        );
+        return;
+      }
+
+      const playBtn = e.target.closest(".btn-playfrom");
+      if (playBtn) {
+        e.stopPropagation();
+        const idx = parseInt(playBtn.dataset.idx);
+        const remainingLines =
+          job.linesData
+            .slice(idx)
+            .map((l) => l.text)
+            .join("\n") + "\n";
+        const state = job.linesData[idx];
+
+        this.activeJobId = job.id;
+        this.isPaused = false;
+        this.expandJobAccordion(job.id);
+
+        document.dispatchEvent(
+          new CustomEvent("PLAY_FROM_LINE", {
+            detail: { jobId: job.id, lineIndex: idx },
+          }),
+        );
+        document.dispatchEvent(
+          new CustomEvent("JOB_STARTED", { detail: job.id }),
+        );
+
+        this.sendJobToMachine(
+          `G90 G0 Z0\nG90 G0 A${state.a.toFixed(4)}\nG90 G0 X${state.x.toFixed(4)} Y${state.y.toFixed(4)}\n` +
+            remainingLines,
+        );
+        this.refreshAllControls();
+        return;
+      }
+    });
+
+    contentDiv.addEventListener("mouseover", (e) => {
+      const lineEl = e.target.closest(".gcl");
+      if (lineEl)
+        document.dispatchEvent(
+          new CustomEvent("HOVER_GCODE_LINE", {
+            detail: { jobId: job.id, lineIndex: parseInt(lineEl.dataset.idx) },
+          }),
+        );
+    });
+    contentDiv.addEventListener("mouseout", () =>
+      document.dispatchEvent(
+        new CustomEvent("HOVER_GCODE_LINE", { detail: null }),
+      ),
+    );
+
+    group.onmouseenter = () =>
+      document.dispatchEvent(
+        new CustomEvent("HIGHLIGHT_SUBJOB", { detail: job }),
+      );
+    group.onmouseleave = () =>
+      document.dispatchEvent(
+        new CustomEvent("HIGHLIGHT_SUBJOB", { detail: null }),
+      );
+
+    return group;
+  }
+
+  renderTree() {
+    this.treeEl.innerHTML = "";
+    this.slicedJobs.forEach((job) =>
+      this.treeEl.appendChild(this.renderJobBlock(job)),
+    );
+  }
+
   openSettingsModal() {
+    // Unchanged Standard Boilerplate
     const modalLayer = document.getElementById("modal-layer");
     if (!modalLayer) return;
 
@@ -266,651 +593,8 @@ export class GCodeManager {
       };
       localStorage.setItem("gcodeConfig", JSON.stringify(this.config));
       modalLayer.innerHTML = "";
-      if (this.slicedJobs.length > 0) this.processNestIntoGCode();
+      if (this.slicedJobs.length > 0) this.generateGCodeFromCanvas(); // Regen
     };
-  }
-
-  getPolygonArea(poly) {
-    let area = 0;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++)
-      area += (poly[j].x + poly[i].x) * (poly[j].y - poly[i].y);
-    return area / 2;
-  }
-
-  generateCompensatedToolpaths(layout) {
-    let compensatedLines = [];
-    const { globalStart, globalEnd, outOvercut, inUndercut, liftAngle } =
-      this.config;
-    const liftAngleRad = liftAngle * (Math.PI / 180);
-
-    layout.forEach((inst) => {
-      const poly = inst.piece.vertices.map((v) => ({
-        x: inst.x + v.x,
-        y: inst.y + v.y,
-      }));
-      const isCCW = this.getPolygonArea(poly) > 0;
-
-      let segments = [];
-      for (let i = 0; i < poly.length; i++)
-        segments.push({
-          p1: { ...poly[i] },
-          p2: { ...poly[(i + 1) % poly.length] },
-        });
-
-      for (let i = 0; i < poly.length; i++) {
-        const segIn = segments[(i - 1 + poly.length) % poly.length];
-        const segOut = segments[i];
-
-        const vIn = {
-          x: poly[i].x - poly[(i - 1 + poly.length) % poly.length].x,
-          y: poly[i].y - poly[(i - 1 + poly.length) % poly.length].y,
-        };
-        const vOut = {
-          x: poly[(i + 1) % poly.length].x - poly[i].x,
-          y: poly[(i + 1) % poly.length].y - poly[i].y,
-        };
-
-        const lenIn = Math.hypot(vIn.x, vIn.y),
-          lenOut = Math.hypot(vOut.x, vOut.y);
-        if (lenIn === 0 || lenOut === 0) continue;
-
-        let angleIn = Math.atan2(vIn.y, vIn.x);
-        let angleOut = Math.atan2(vOut.y, vOut.x);
-        let diff = angleOut - angleIn;
-        while (diff > Math.PI) diff -= 2 * Math.PI;
-        while (diff <= -Math.PI) diff += 2 * Math.PI;
-        diff = Math.abs(diff);
-
-        if (diff > liftAngleRad) {
-          const cp = vIn.x * vOut.y - vIn.y * vOut.x;
-          const cornerOvercut = (isCCW ? cp > 0 : cp < 0)
-            ? outOvercut
-            : -inUndercut;
-
-          segIn.p2.x += (vIn.x / lenIn) * (globalEnd + cornerOvercut);
-          segIn.p2.y += (vIn.y / lenIn) * (globalEnd + cornerOvercut);
-
-          segOut.p1.x -= (vOut.x / lenOut) * (globalStart + cornerOvercut);
-          segOut.p1.y -= (vOut.y / lenOut) * (globalStart + cornerOvercut);
-        }
-      }
-      compensatedLines.push(...segments);
-    });
-
-    return compensatedLines;
-  }
-
-  extractGeometryForBand(toolpaths, cutLine, topY, bottomY) {
-    let segments = [];
-    toolpaths.forEach((line) =>
-      this.clipLineToBand(line.p1, line.p2, topY, bottomY, segments),
-    );
-    if (cutLine) {
-      for (let i = 0; i < cutLine.length - 1; i++)
-        this.clipLineToBand(
-          cutLine[i],
-          cutLine[i + 1],
-          topY,
-          bottomY,
-          segments,
-          true,
-        );
-    }
-    return segments;
-  }
-
-  clipLineToBand(p1, p2, top, bottom, output, isCut = false) {
-    const yMin = Math.min(p1.y, p2.y),
-      yMax = Math.max(p1.y, p2.y);
-    if (yMax < bottom || yMin > top) return;
-
-    let s1 = { ...p1 },
-      s2 = { ...p2 };
-    if (s1.y > top) s1 = this.intersectY(p1, p2, top);
-    if (s2.y > top) s2 = this.intersectY(p1, p2, top);
-    if (s1.y < bottom) s1 = this.intersectY(p1, p2, bottom);
-    if (s2.y < bottom) s2 = this.intersectY(p1, p2, bottom);
-
-    output.push({ p1: s1, p2: s2, isCutLine: isCut });
-  }
-
-  intersectY(a, b, yTarget) {
-    const t = (yTarget - a.y) / (b.y - a.y);
-    return { x: a.x + t * (b.x - a.x), y: yTarget };
-  }
-
-  deduplicateCommonLines(lines) {
-    if (this.config.enableDedup === false) return lines;
-    let output = [...lines];
-    const tol = this.config.overlapTol || 0.5;
-    const cosAngleTol = Math.cos(
-      this.config.angleTol !== undefined ? this.config.angleTol : 0.2,
-    );
-
-    let i = 0;
-    while (i < output.length) {
-      let A = output[i];
-      let clipped = false;
-
-      for (let j = 0; j < output.length; j++) {
-        if (i === j) continue;
-        let B = output[j];
-
-        const dx1 = A.p2.x - A.p1.x,
-          dy1 = A.p2.y - A.p1.y;
-        const dx2 = B.p2.x - B.p1.x,
-          dy2 = B.p2.y - B.p1.y;
-        const len1 = Math.hypot(dx1, dy1),
-          len2 = Math.hypot(dx2, dy2);
-
-        if (len1 === 0 || len2 === 0) continue;
-
-        if (Math.abs((dx1 * dx2 + dy1 * dy2) / (len1 * len2)) < cosAngleTol)
-          continue;
-        if (
-          Math.abs(dx1 * (B.p1.y - A.p1.y) - dy1 * (B.p1.x - A.p1.x)) / len1 >
-          tol
-        )
-          continue;
-
-        const t3 =
-          ((B.p1.x - A.p1.x) * dx1 + (B.p1.y - A.p1.y) * dy1) / (len1 * len1);
-        const t4 =
-          ((B.p2.x - A.p1.x) * dx1 + (B.p2.y - A.p1.y) * dy1) / (len1 * len1);
-
-        const overlapStart = Math.max(0, Math.min(t3, t4));
-        const overlapEnd = Math.min(1, Math.max(t3, t4));
-
-        if ((overlapEnd - overlapStart) * len1 > 0.05) {
-          let newSegments = [];
-          if (overlapStart * len1 > 0.05)
-            newSegments.push({
-              p1: { x: A.p1.x, y: A.p1.y },
-              p2: {
-                x: A.p1.x + overlapStart * dx1,
-                y: A.p1.y + overlapStart * dy1,
-              },
-            });
-          if ((1 - overlapEnd) * len1 > 0.05)
-            newSegments.push({
-              p1: {
-                x: A.p1.x + overlapEnd * dx1,
-                y: A.p1.y + overlapEnd * dy1,
-              },
-              p2: { x: A.p2.x, y: A.p2.y },
-            });
-          output.splice(i, 1, ...newSegments);
-          clipped = true;
-          break;
-        }
-      }
-      if (!clipped) i++;
-    }
-    return output;
-  }
-
-  chainSegments(segments) {
-    if (segments.length === 0) return [];
-    let pool = [...segments],
-      chains = [],
-      currentPoint = { x: pool[0].p1.x, y: pool[0].p1.y };
-
-    while (pool.length > 0) {
-      let bestIdx = -1,
-        bestDist = Infinity;
-      for (let i = 0; i < pool.length; i++) {
-        const d1 = Math.hypot(
-          pool[i].p1.x - currentPoint.x,
-          pool[i].p1.y - currentPoint.y,
-        );
-        if (d1 < bestDist) {
-          bestDist = d1;
-          bestIdx = i;
-        }
-      }
-      const seg = pool.splice(bestIdx, 1)[0];
-      chains.push(seg);
-      currentPoint = seg.p2;
-    }
-    return chains;
-  }
-
-  processNestIntoGCode() {
-    if (!this.activeNest) return;
-
-    const layout = Array.isArray(this.activeNest)
-      ? this.activeNest
-      : this.activeNest.layout || [];
-    const cutLine = Array.isArray(this.activeNest)
-      ? null
-      : this.activeNest.cutLine;
-
-    if (layout.length === 0) return;
-
-    let toolpaths = this.generateCompensatedToolpaths(layout);
-    toolpaths = this.deduplicateCommonLines(toolpaths);
-
-    let minY = Infinity,
-      maxY = -Infinity;
-    toolpaths.forEach((line) => {
-      if (line.p1.y < minY) minY = line.p1.y;
-      if (line.p1.y > maxY) maxY = line.p1.y;
-      if (line.p2.y < minY) minY = line.p2.y;
-      if (line.p2.y > maxY) maxY = line.p2.y;
-    });
-
-    if (cutLine) {
-      cutLine.forEach((p) => {
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
-      });
-    }
-
-    const bandHeight = this.config.bandHeight || 350;
-    this.jobMaxY = maxY;
-    this.slicedJobs = [];
-    let currentTopY = maxY,
-      lastBandTopY = maxY,
-      bandIndex = 1;
-
-    while (currentTopY > minY - 10) {
-      const currentBottomY = currentTopY - bandHeight;
-      const rawGeometry = this.extractGeometryForBand(
-        toolpaths,
-        null,
-        currentTopY,
-        currentBottomY,
-      );
-      const sliceGeometry = this.chainSegments(rawGeometry);
-
-      if (sliceGeometry.length > 0) {
-        const jobData = this.compileGCodeForSlice(
-          sliceGeometry,
-          currentTopY,
-          currentBottomY,
-        );
-        this.slicedJobs.push({
-          id: `Sub-Job ${bandIndex}`,
-          topY: currentTopY,
-          bottomY: currentBottomY,
-          geometry: sliceGeometry,
-          gcode: jobData.code,
-          simPaths: jobData.simPaths,
-        });
-        bandIndex++;
-      }
-      lastBandTopY = currentTopY;
-      currentTopY -= bandHeight;
-    }
-
-    if (cutLine && cutLine.length > 0) {
-      let cMinY = Infinity,
-        cMaxY = -Infinity;
-      cutLine.forEach((p) => {
-        if (p.y < cMinY) cMinY = p.y;
-        if (p.y > cMaxY) cMaxY = p.y;
-      });
-      const cutGeom = [];
-      for (let i = 0; i < cutLine.length - 1; i++)
-        cutGeom.push({ p1: cutLine[i], p2: cutLine[i + 1], isCutLine: true });
-
-      const cutJobData = this.compileGCodeForSlice(
-        cutGeom,
-        lastBandTopY,
-        cMinY,
-      );
-      this.cutLineJob = {
-        id: `Sever Fabric`,
-        isCutLine: true,
-        topY: cMaxY,
-        bottomY: cMinY,
-        geometry: cutGeom,
-        gcode: cutJobData.code,
-        simPaths: cutJobData.simPaths,
-      };
-    }
-
-    document.dispatchEvent(
-      new CustomEvent("SIMULATOR_UPDATE", {
-        detail: { jobs: this.slicedJobs, cutJob: this.cutLineJob },
-      }),
-    );
-    this.renderTree();
-    this.renderHeader();
-  }
-
-  compileGCodeForSlice(geometry, bandTopY, bandBottomY) {
-    const { zRapid, zCut, liftAngle, pivotFeed } = this.config;
-    const fOffset = JSON.parse(localStorage.getItem("savedFabricOffset")) || {
-      x: 0,
-      y: 0,
-    };
-
-    let code = `G90 ; Absolute Coordinates\nG0 Z${zRapid} ; Ensure Knife is UP\n`;
-    let simPaths = [];
-
-    let lastX = null,
-      lastY = null,
-      lastA = 0;
-    let lastWorldX = null,
-      lastWorldY = null;
-    const liftAngleRad = liftAngle * (Math.PI / 180);
-
-    geometry.forEach((line) => {
-      const mX1 = line.p1.x + fOffset.x;
-      const mX2 = line.p2.x + fOffset.x;
-
-      const mY1 = line.p1.y - this.jobMaxY + fOffset.y;
-      const mY2 = line.p2.y - this.jobMaxY + fOffset.y;
-
-      let angleRad = Math.atan2(mY2 - mY1, mX2 - mX1);
-
-      while (angleRad - lastA > Math.PI) angleRad -= 2 * Math.PI;
-      while (angleRad - lastA < -Math.PI) angleRad += 2 * Math.PI;
-
-      const isConnected =
-        lastX !== null &&
-        Math.abs(mX1 - lastX) < 5.0 &&
-        Math.abs(mY1 - lastY) < 5.0;
-
-      if (!isConnected) {
-        code += `\n; Rapid to Start\n`;
-        code += `G0 Z${zRapid}\n`;
-
-        if (lastX !== null && lastY !== null) {
-          const rapidDist = Math.hypot(mX1 - lastX, mY1 - lastY);
-          if (rapidDist > 20) {
-            let rapidA = Math.atan2(mY1 - lastY, mX1 - lastX);
-            while (rapidA - lastA > Math.PI) rapidA -= 2 * Math.PI;
-            while (rapidA - lastA < -Math.PI) rapidA += 2 * Math.PI;
-
-            code += `G0 A${rapidA.toFixed(4)} ; Align for long rapid\n`;
-            lastA = rapidA;
-
-            while (angleRad - lastA > Math.PI) angleRad -= 2 * Math.PI;
-            while (angleRad - lastA < -Math.PI) angleRad += 2 * Math.PI;
-          }
-        }
-
-        code += `G0 X${mX1.toFixed(4)} Y${mY1.toFixed(4)}\n`;
-        code += `G0 A${angleRad.toFixed(4)}\n`;
-        code += `G1 Z${zCut} F1000\n`;
-
-        if (lastWorldX !== null) {
-          simPaths.push({
-            type: "G0",
-            p1: { x: lastWorldX, y: lastWorldY },
-            p2: { x: line.p1.x, y: line.p1.y },
-          });
-        }
-      } else {
-        const angleDiff = Math.abs(angleRad - lastA);
-
-        if (angleDiff > liftAngleRad) {
-          code += `; Corner Lift\n`;
-          code += `G0 Z${zRapid}\n`;
-
-          if (Math.abs(mX1 - lastX) > 0.01 || Math.abs(mY1 - lastY) > 0.01) {
-            code += `G0 X${mX1.toFixed(4)} Y${mY1.toFixed(4)}\n`;
-            simPaths.push({
-              type: "G0",
-              p1: { x: lastWorldX, y: lastWorldY },
-              p2: { x: line.p1.x, y: line.p1.y },
-            });
-          }
-
-          code += `G0 A${angleRad.toFixed(4)}\n`;
-          code += `G1 Z${zCut} F1000\n`;
-
-          simPaths.push({
-            type: "PIVOT_AIR",
-            p: { x: line.p1.x, y: line.p1.y },
-            a1: lastA,
-            a2: angleRad,
-          });
-        } else if (angleDiff > 0.001) {
-          code += `G1 A${angleRad.toFixed(4)} F${pivotFeed || 1000} ; Pivot\n`;
-          simPaths.push({
-            type: "PIVOT_MAT",
-            p: { x: line.p1.x, y: line.p1.y },
-            a1: lastA,
-            a2: angleRad,
-          });
-        }
-      }
-
-      code += `G1 X${mX2.toFixed(4)} Y${mY2.toFixed(4)} F3000\n`;
-
-      simPaths.push({
-        type: "G1",
-        p1: { x: line.p1.x, y: line.p1.y },
-        p2: { x: line.p2.x, y: line.p2.y },
-        isCutLine: line.isCutLine,
-      });
-
-      lastX = parseFloat(mX2.toFixed(4));
-      lastY = parseFloat(mY2.toFixed(4));
-      lastA = parseFloat(angleRad.toFixed(4));
-      lastWorldX = line.p2.x;
-      lastWorldY = line.p2.y;
-    });
-
-    const parkY = bandBottomY - this.jobMaxY + fOffset.y;
-
-    let endA = 0;
-    while (endA - lastA > Math.PI) endA -= 2 * Math.PI;
-    while (endA - lastA < -Math.PI) endA += 2 * Math.PI;
-
-    code += `\n; --- SLICE COMPLETE ---\nG0 Z${zRapid}\nG0 X0 Y${parkY.toFixed(4)}\nG0 Z0\nG0 A${endA.toFixed(4)}\nG28.3 A0 ; Zero internal A-axis coordinate\nM0 ; Pull Fabric\n`;
-
-    return { code, simPaths };
-  }
-
-  sendJobToMachine(gcodeString) {
-    document.dispatchEvent(
-      new CustomEvent("STREAM_GCODE_JOB", { detail: gcodeString }),
-    );
-  }
-
-  updateVirtualFabric(cutLine) {
-    if (!cutLine || cutLine.length === 0) return;
-
-    let nestMaxY = -Infinity;
-    const layout = Array.isArray(this.activeNest)
-      ? this.activeNest
-      : this.activeNest.layout || [];
-
-    if (layout.length > 0) {
-      layout.forEach((inst) => {
-        inst.piece.vertices.forEach((v) => {
-          const y = inst.y + v.y;
-          if (y > nestMaxY) nestMaxY = y;
-        });
-      });
-    }
-
-    const sortedLine = [...cutLine].sort((a, b) => a.x - b.x);
-
-    const padX = 20;
-    const minX = sortedLine[0].x - padX;
-    const maxX = sortedLine[sortedLine.length - 1].x + padX;
-
-    let cutMaxY = -Infinity;
-    sortedLine.forEach((p) => {
-      if (p.y > cutMaxY) cutMaxY = p.y;
-    });
-
-    const topY = Math.max(cutMaxY, nestMaxY) + 50;
-
-    let clipPoly = [];
-
-    clipPoly.push({ x: minX, y: topY });
-    clipPoly.push({ x: maxX, y: topY });
-    clipPoly.push({ x: maxX, y: sortedLine[sortedLine.length - 1].y });
-
-    for (let i = sortedLine.length - 1; i >= 0; i--) {
-      clipPoly.push({ x: sortedLine[i].x, y: sortedLine[i].y });
-    }
-
-    clipPoly.push({ x: minX, y: sortedLine[0].y });
-
-    document.dispatchEvent(
-      new CustomEvent("VIRTUAL_FABRIC_CUT", {
-        detail: {
-          cutLine: cutLine,
-          clippingPolygon: clipPoly,
-        },
-      }),
-    );
-  }
-
-  refreshAllControls() {
-    this.win.content.querySelectorAll(".gcode-job-group").forEach((group) => {
-      const jobId = group.dataset.jobId;
-      const isCutLine = group.dataset.isCut === "true";
-      const actionsDiv = group.querySelector(".job-actions");
-      actionsDiv.innerHTML = this.getJobControlsHTML(jobId, isCutLine);
-      this.attachControlListeners(group, jobId, isCutLine);
-    });
-  }
-
-  getJobControlsHTML(jobId, isCutLine) {
-    if (this.activeJobId === null) {
-      let html = `<button class="glass-btn primary btn-play" style="padding: 2px 8px;">▶</button>`;
-      if (isCutLine)
-        html += `<button class="glass-btn secondary btn-omit" style="padding: 2px 8px;">Omit</button>`;
-      return html;
-    } else if (this.activeJobId === jobId) {
-      if (this.isPaused) {
-        return `
-          <button class="glass-btn primary btn-resume" style="padding: 2px 8px; background: rgba(43, 234, 100, 0.2); color: #2BEA64;">▶</button>
-          <button class="glass-btn secondary btn-stop" style="padding: 2px 8px; background: rgba(255, 60, 60, 0.2); color: #ff3c3c; border-color: rgba(255, 60, 60, 0.4);">⏹</button>
-        `;
-      } else {
-        return `
-          <button class="glass-btn secondary btn-pause" style="padding: 2px 8px; background: rgba(255, 170, 0, 0.2); color: #ffaa00; border-color: rgba(255, 170, 0, 0.4);">⏸</button>
-          <button class="glass-btn secondary btn-stop" style="padding: 2px 8px; background: rgba(255, 60, 60, 0.2); color: #ff3c3c; border-color: rgba(255, 60, 60, 0.4);">⏹</button>
-        `;
-      }
-    } else {
-      return `<button class="glass-btn secondary" style="padding: 2px 8px; opacity: 0.3; pointer-events: none;">Busy</button>`;
-    }
-  }
-
-  // THE FIX: Included clearGCodeData call on Omit and Cut
-  attachControlListeners(group, jobId, isCutLine) {
-    const playBtn = group.querySelector(".btn-play");
-    const pauseBtn = group.querySelector(".btn-pause");
-    const resumeBtn = group.querySelector(".btn-resume");
-    const stopBtn = group.querySelector(".btn-stop");
-    const omitBtn = group.querySelector(".btn-omit");
-
-    const job =
-      jobId === "Sever Fabric"
-        ? this.cutLineJob
-        : this.slicedJobs.find((j) => j.id === jobId);
-    const cutLine = Array.isArray(this.activeNest)
-      ? null
-      : this.activeNest.cutLine;
-
-    if (playBtn)
-      playBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.activeJobId = jobId;
-        this.isPaused = false;
-        this.sendJobToMachine(job.gcode);
-        if (isCutLine) {
-          this.updateVirtualFabric(cutLine);
-          this.clearGCodeData();
-        } else {
-          this.refreshAllControls();
-        }
-      };
-
-    if (pauseBtn)
-      pauseBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.isPaused = true;
-        document.dispatchEvent(new CustomEvent("PAUSE_JOB"));
-        this.refreshAllControls();
-      };
-
-    if (resumeBtn)
-      resumeBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.isPaused = false;
-        document.dispatchEvent(new CustomEvent("RESUME_JOB"));
-        this.refreshAllControls();
-      };
-
-    if (stopBtn)
-      stopBtn.onclick = (e) => {
-        e.stopPropagation();
-        document.dispatchEvent(new CustomEvent("ABORT_JOB"));
-      };
-
-    if (omitBtn)
-      omitBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.updateVirtualFabric(cutLine);
-        this.clearGCodeData();
-      };
-  }
-
-  renderJobBlock(job, isCutLine = false) {
-    const group = document.createElement("div");
-    group.className = "gcode-job-group";
-    group.dataset.jobId = job.id;
-    group.dataset.isCut = isCutLine;
-
-    group.innerHTML = `
-            <div class="gcode-job-summary" style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; flex-direction: column;">
-                    <span>${job.id}</span>
-                    <span style="font-size:9px; font-weight: normal; color: var(--text-muted);">Y: ${job.topY.toFixed(0)} to ${job.bottomY.toFixed(0)}</span>
-                </div>
-                <div style="display: flex; gap: 4px;" class="job-actions">
-                    ${this.getJobControlsHTML(job.id, isCutLine)}
-                </div>
-            </div>
-            <div class="gcode-job-content"><div class="gcode-lines-wrap">${job.gcode}</div></div>
-        `;
-
-    const summary = group.querySelector(".gcode-job-summary");
-    summary.onclick = (e) => {
-      if (e.target.closest(".job-actions")) return;
-      const wasExp = group.classList.contains("expanded");
-      this.win.content
-        .querySelectorAll(".gcode-job-group")
-        .forEach((el) => el.classList.remove("expanded"));
-      if (!wasExp) group.classList.add("expanded");
-    };
-
-    this.attachControlListeners(group, job.id, isCutLine);
-
-    group.onmouseenter = () =>
-      document.dispatchEvent(
-        new CustomEvent("HIGHLIGHT_SUBJOB", { detail: job }),
-      );
-    group.onmouseleave = () =>
-      document.dispatchEvent(
-        new CustomEvent("HIGHLIGHT_SUBJOB", { detail: null }),
-      );
-    return group;
-  }
-
-  renderTree() {
-    this.treeEl.innerHTML = "";
-    this.slicedJobs.forEach((job) =>
-      this.treeEl.appendChild(this.renderJobBlock(job)),
-    );
-    if (this.cutLineJob) {
-      const div = document.createElement("div");
-      div.style.cssText =
-        "margin-top: 10px; border-top: 1px dashed var(--glass-border); padding-top: 5px;";
-      this.treeEl.appendChild(div);
-      this.treeEl.appendChild(this.renderJobBlock(this.cutLineJob, true));
-    }
   }
 
   downloadMasterGCode() {
@@ -918,8 +602,6 @@ export class GCodeManager {
     this.slicedJobs.forEach(
       (job) => (masterCode += `; --- ${job.id} ---\n` + job.gcode + "\n"),
     );
-    if (this.cutLineJob)
-      masterCode += `; --- SEVER FABRIC ---\n` + this.cutLineJob.gcode + "\n";
     masterCode += "M30\n%\n";
 
     const blob = new Blob([masterCode], { type: "text/plain" });

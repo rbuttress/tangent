@@ -73,6 +73,23 @@
   opacity: 1;
   visibility: visible;
 }
+
+#cursor-hud.canvas-mode {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--accent-red, #ea2b2b) !important;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 0 !important;
+  text-shadow:
+    1px 1px 0px rgba(250, 249, 245, 0.8),
+    -1px -1px 0px rgba(250, 249, 245, 0.8),
+    1px -1px 0px rgba(250, 249, 245, 0.8),
+    -1px 1px 0px rgba(250, 249, 245, 0.8);
+}
+
 .hud-title {
   font-weight: bold;
   margin-bottom: 4px;

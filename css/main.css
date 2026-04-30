@@ -108,3 +108,50 @@ button:hover {
   background: var(--accent-warm);
   border-color: var(--text-muted);
 }
+
+/* --- TOOLBAR DOCK --- */
+.tool-dock {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  z-index: 1000;
+}
+
+.tool-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-main);
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.2s;
+}
+
+.tool-btn svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+.tool-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tool-btn.active {
+  background: rgba(74, 144, 226, 0.2);
+  border-color: rgba(74, 144, 226, 0.5);
+  color: #4a90e2;
+}

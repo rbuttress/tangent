@@ -1,8 +1,22 @@
 // js/visualizer/canvas.js
-//version no. 2.8
+//version no. 6.2
 
+import { HistoryManager } from "./history.js";
+import { InputManager } from "./input.js";
+import { Renderer } from "./renderer.js";
+import { SelectionManager } from "./selection.js";
 import { machine } from "../core/machine.js";
-import { Nester } from "../core/nester.js";
+import {
+  SelectTool,
+  FabricDragTool,
+  DrawPolyTool,
+  BoxTool,
+  BoxMaskTool,
+  FreeMaskTool,
+  PolyMaskTool,
+  CutFabricTool,
+  PolyCutTool,
+} from "./tools.js";
 
 export class Visualizer {
   constructor(canvasId, controller) {
@@ -10,352 +24,373 @@ export class Visualizer {
     this.ctx = this.canvas.getContext("2d");
     this.controller = controller;
 
+    // --- Core View State ---
     this.viewport = { offsetX: 0, offsetY: 0, targetY: 0, scale: 1.0 };
     this.bounds = { width: 1600 };
     this.toolRadius = 10;
 
-    // --- Fabric & Queue State ---
+    // --- Application Data State ---
     this.activeTracePoints = [];
     this.loadedFabric = JSON.parse(localStorage.getItem("savedFabric")) || null;
     this.fabricOffset = JSON.parse(
       localStorage.getItem("savedFabricOffset"),
     ) || { x: 0, y: 0 };
-    this.isDraggingFabric = false;
-    this.dragStart = { x: 0, y: 0 };
-
     this.placedInstances =
       JSON.parse(localStorage.getItem("savedInstances")) || [];
-    this.dashOffset = 0;
-    this.draggedInstance = null;
-    this.dragMouseStart = { x: 0, y: 0 };
-    this.hoveredInstance = null;
 
+    // --- Interaction State ---
+    this.activeDrawing = [];
+    this.currentMousePos = null;
+    this.isAltHeld = false;
+    this.altTargetPos = null;
+
+    // --- Simulator & UI Overlay State ---
     this.isNestingLive = false;
     this.ghostLayout = [];
     this.ghostTestingPoly = null;
-
+    this.hoverPreviewData = null;
     this.gcodeSolidData = null;
     this.highlightedJob = null;
     this.simulatorJobs = [];
     this.simulatorCutJob = null;
 
-    document.addEventListener("RENDER_GCODE_SOLID", (e) => {
-      this.isNestingLive = false;
-      this.gcodeSolidData = e.detail;
+    // --- Active Job History Tracking ---
+    this.hoveredGcodeLine = null;
+    this.completedJobs = new Set();
+    this.maxLineByJob = {};
+    this.globalCutLinePreview = null;
+    this.activeJobId = null;
+
+    // --- Sub-Modules ---
+    this.selection = new SelectionManager();
+    this.history = new HistoryManager(this, 30);
+    this.input = new InputManager(this);
+    this.renderer = new Renderer(this);
+
+    this.tools = {
+      SELECT: new SelectTool(this),
+      DRAG_FABRIC: new FabricDragTool(this),
+      DRAW_POLY: new DrawPolyTool(this),
+      BOX: new BoxTool(this),
+      BOX_MASK: new BoxMaskTool(this),
+      FREE_MASK: new FreeMaskTool(this),
+      POLY_MASK: new PolyMaskTool(this),
+      CUT_FABRIC: new CutFabricTool(this),
+      POLY_CUT: new PolyCutTool(this),
+    };
+    this.currentTool = this.tools["SELECT"];
+
+    this.bindJobStateListeners();
+
+    // --- Initialize ---
+    this.input.init();
+    this.renderer.animate();
+    this.history.record();
+  }
+
+  bindJobStateListeners() {
+    document.addEventListener("HOVER_GCODE_LINE", (e) => {
+      this.hoveredGcodeLine = e.detail;
+    });
+
+    document.addEventListener("JOB_STARTED", (e) => {
+      this.activeJobId = e.detail;
+    });
+
+    document.addEventListener("JOB_STOPPED", () => {
+      this.activeJobId = null;
+    });
+
+    // KINEMATIC COORDINATE TRACKING
+    machine.onUpdate(() => {
+      if (!this.activeJobId || !this.simulatorJobs) return;
+      const job = this.simulatorJobs.find((j) => j.id === this.activeJobId);
+      if (!job) return;
+
+      const mx = machine.currentPos.x;
+      const my = machine.currentPos.y;
+      const ox = this.loadedFabric ? this.fabricOffset.x : 0;
+      const oy = this.loadedFabric ? this.fabricOffset.y : 0;
+
+      const currentMax = this.maxLineByJob[this.activeJobId] || -1;
+      let nextIdx = currentMax;
+
+      const searchWindow = job.simPaths.filter(
+        (p) => p.lineIndex > currentMax && p.lineIndex <= currentMax + 10,
+      );
+
+      for (const path of searchWindow) {
+        let pX, pY;
+        if (path.type === "G0" || path.type === "G1") {
+          pX = path.p1.x + ox;
+          pY = path.p1.y + oy;
+        } else if (path.type === "PIVOT_MAT" || path.type === "PIVOT_AIR") {
+          pX = path.p.x + ox;
+          pY = path.p.y + oy;
+        }
+
+        if (pX !== undefined && pY !== undefined) {
+          const dist = Math.hypot(pX - mx, pY - my);
+          if (dist < 2.0) {
+            nextIdx = Math.max(nextIdx, path.lineIndex);
+          }
+        }
+      }
+
+      if (nextIdx > currentMax) {
+        this.maxLineByJob[this.activeJobId] = nextIdx;
+
+        this.completedCutPaths = [];
+        this.simulatorJobs.forEach((j) => {
+          const isFullyCompleted = this.completedJobs.has(j.id);
+          const maxLine = this.maxLineByJob[j.id] ?? -1;
+          j.simPaths.forEach((path) => {
+            if (
+              path.type === "G1" &&
+              (isFullyCompleted || path.lineIndex <= maxLine)
+            ) {
+              this.completedCutPaths.push(path);
+            }
+          });
+        });
+
+        document.dispatchEvent(
+          new CustomEvent("JOB_PROGRESS", {
+            detail: { jobId: this.activeJobId, lineIndex: nextIdx },
+          }),
+        );
+      }
+    });
+
+    document.addEventListener("PLAY_FROM_LINE", (e) => {
+      const { jobId, lineIndex } = e.detail;
+      this.maxLineByJob[jobId] = lineIndex - 1;
+    });
+
+    document.addEventListener("SUBJOB_COMPLETED", (e) => {
+      this.completedJobs.add(e.detail);
+      document.dispatchEvent(new CustomEvent("COMPLETED_CUTS_UPDATED"));
+    });
+
+    document.addEventListener("CLEAR_JOB_CUTS", (e) => {
+      const jobId = e.detail;
+      this.completedJobs.delete(jobId);
+      if (this.maxLineByJob[jobId] !== undefined)
+        delete this.maxLineByJob[jobId];
+      document.dispatchEvent(new CustomEvent("COMPLETED_CUTS_UPDATED"));
+    });
+
+    document.addEventListener("CLEAR_SMART", () => {
+      const hasCuts =
+        this.completedJobs.size > 0 ||
+        Object.values(this.maxLineByJob).some((v) => v > -1);
+      if (hasCuts) {
+        this.completedJobs.clear();
+        this.maxLineByJob = {};
+        this.globalCutLinePreview = null;
+        this.completedCutPaths = [];
+        document.dispatchEvent(new CustomEvent("CUTS_CLEARED_UI_UPDATE"));
+      } else {
+        document.dispatchEvent(new CustomEvent("CLEAR_GCODE_ENTIRELY"));
+      }
     });
 
     document.addEventListener("CLEAR_GCODE_PREVIEW", () => {
-      this.gcodeSolidData = null;
-      this.highlightedJob = null;
-      this.simulatorJobs = [];
-      this.simulatorCutJob = null;
+      this.completedJobs.clear();
+      this.maxLineByJob = {};
+      this.completedCutPaths = [];
+      this.globalCutLinePreview = null;
+      document.dispatchEvent(new CustomEvent("COMPLETED_CUTS_UPDATED"));
     });
 
-    document.addEventListener("SIMULATOR_UPDATE", (e) => {
-      this.simulatorJobs = e.detail.jobs;
-      this.simulatorCutJob = e.detail.cutJob;
+    document.addEventListener("PREVIEW_GLOBAL_CUT_LINE", () => {
+      if (this.completedCutPaths.length === 0 || !this.loadedFabric) return;
+
+      let minX = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity,
+        minY = Infinity;
+      this.loadedFabric.edgeProfile.forEach((p) => {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      });
+      const fBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+
+      const resolution = 5;
+      const cutRadius = window.NestConfig
+        ? window.NestConfig.cutRadius || 50
+        : 50;
+      const cols = Math.ceil(fBox.w / resolution) + 1;
+      const rawProfile = new Array(cols);
+      const fabric = this.loadedFabric;
+
+      for (let i = 0; i < cols; i++) {
+        const scanX = fBox.x + i * resolution;
+        let highestY = -Infinity;
+
+        for (let j = 0; j < fabric.edgeProfile.length; j++) {
+          const p1 = fabric.edgeProfile[j];
+          const p2 = fabric.edgeProfile[(j + 1) % fabric.edgeProfile.length];
+          const minXEdge = Math.min(p1.x, p2.x);
+          const maxXEdge = Math.max(p1.x, p2.x);
+
+          if (scanX >= minXEdge && scanX <= maxXEdge && minXEdge !== maxXEdge) {
+            const t = (scanX - p1.x) / (p2.x - p1.x);
+            const y = p1.y + t * (p2.y - p1.y);
+            if (y > highestY) highestY = y;
+          }
+        }
+        rawProfile[i] = highestY !== -Infinity ? highestY : fBox.y + fBox.h;
+      }
+
+      this.completedCutPaths.forEach((path) => {
+        const p1 = path.p1,
+          p2 = path.p2;
+        const minXCut = Math.min(p1.x, p2.x),
+          maxXCut = Math.max(p1.x, p2.x);
+        if (minXCut === maxXCut) return;
+
+        const startCol = Math.max(
+          0,
+          Math.floor((minXCut - fBox.x) / resolution),
+        );
+        const endCol = Math.min(
+          cols - 1,
+          Math.ceil((maxXCut - fBox.x) / resolution),
+        );
+
+        for (let col = startCol; col <= endCol; col++) {
+          const scanX = fBox.x + col * resolution;
+          if (scanX >= minXCut && scanX <= maxXCut) {
+            const t = (scanX - p1.x) / (p2.x - p1.x);
+            const y = p1.y + t * (p2.y - p1.y);
+            if (y < rawProfile[col]) rawProfile[col] = y;
+          }
+        }
+      });
+
+      const windowSize = Math.max(1, Math.floor(cutRadius / resolution));
+      const lowered = new Array(cols);
+
+      for (let i = 0; i < cols; i++) {
+        let localMin = rawProfile[i];
+        for (let w = -windowSize; w <= windowSize; w++) {
+          if (i + w >= 0 && i + w < cols) {
+            if (rawProfile[i + w] < localMin) localMin = rawProfile[i + w];
+          }
+        }
+        lowered[i] = localMin - 5;
+      }
+
+      const smoothed = new Array(cols);
+      for (let i = 0; i < cols; i++) {
+        let sum = 0,
+          count = 0;
+        for (let w = -windowSize; w <= windowSize; w++) {
+          if (i + w >= 0 && i + w < cols) {
+            sum += lowered[i + w];
+            count++;
+          }
+        }
+        smoothed[i] = sum / count;
+      }
+
+      const finalLine = [];
+      for (let i = 0; i < cols; i++) {
+        finalLine.push({ x: fBox.x + i * resolution, y: smoothed[i] });
+      }
+
+      this.globalCutLinePreview = finalLine;
     });
 
-    document.addEventListener("HIGHLIGHT_SUBJOB", (e) => {
-      this.highlightedJob = e.detail;
+    document.addEventListener("CLEAR_GLOBAL_CUT_LINE", () => {
+      this.globalCutLinePreview = null;
     });
 
-    // --- THE FIX: Boolean Subtraction for the Virtual Fabric ---
-    document.addEventListener("VIRTUAL_FABRIC_CUT", (e) => {
-      if (!this.loadedFabric || !this.loadedFabric.edgeProfile) return;
+    document.addEventListener("COMMIT_GLOBAL_CUT_LINE", () => {
+      if (
+        !this.globalCutLinePreview ||
+        !this.loadedFabric ||
+        typeof ClipperLib === "undefined"
+      )
+        return;
 
-      // Ensure we are receiving the new structured payload from gcode.js
-      if (!e.detail || !e.detail.clippingPolygon) return;
-
-      const { clippingPolygon } = e.detail;
-
-      // Clipper.js strictly requires integer coordinates, so we scale up
       const scale = 1000;
 
-      // 1. Prepare Subject (The current uncut fabric)
-      const subj = [
-        this.loadedFabric.edgeProfile.map((p) => ({
-          X: Math.round(p.x * scale),
-          Y: Math.round(p.y * scale),
-        })),
-      ];
+      const removePoly = this.globalCutLinePreview.map((p) => ({
+        X: Math.round(p.x * scale),
+        Y: Math.round(p.y * scale),
+      }));
 
-      // 2. Prepare Clip (The "Cookie Cutter" generated by gcode.js)
-      const clip = [
-        clippingPolygon.map((p) => ({
-          X: Math.round(p.x * scale),
-          Y: Math.round(p.y * scale),
-        })),
-      ];
+      const lastX = removePoly[removePoly.length - 1].X;
+      const firstX = removePoly[0].X;
 
-      if (typeof ClipperLib !== "undefined") {
-        const c = new ClipperLib.Clipper();
+      removePoly.push({ X: lastX + 10000 * scale, Y: 10000 * scale });
+      removePoly.push({ X: firstX - 10000 * scale, Y: 10000 * scale });
 
-        const cleanSubj = ClipperLib.Clipper.SimplifyPolygons(
-          subj,
-          ClipperLib.PolyFillType.pftNonZero,
-        );
-        const cleanClip = ClipperLib.Clipper.SimplifyPolygons(
-          clip,
-          ClipperLib.PolyFillType.pftNonZero,
-        );
+      const fabPoly = this.loadedFabric.edgeProfile.map((p) => ({
+        X: Math.round(p.x * scale),
+        Y: Math.round(p.y * scale),
+      }));
 
-        // Force strict evaluation
-        c.StrictlySimple = true;
+      const c = new ClipperLib.Clipper();
+      c.AddPaths([fabPoly], ClipperLib.PolyType.ptSubject, true);
+      c.AddPaths([removePoly], ClipperLib.PolyType.ptClip, true);
 
-        // Pass the cleaned geometry instead
-        c.AddPaths(cleanSubj, ClipperLib.PolyType.ptSubject, true);
-        c.AddPaths(cleanClip, ClipperLib.PolyType.ptClip, true);
+      const solution = new ClipperLib.Paths();
+      c.Execute(
+        ClipperLib.ClipType.ctDifference,
+        solution,
+        ClipperLib.PolyFillType.pftNonZero,
+        ClipperLib.PolyFillType.pftNonZero,
+      );
 
-        const solution = new ClipperLib.Paths();
-
-        // 3. Execute the DIFFERENCE operation
-        c.Execute(
-          ClipperLib.ClipType.ctDifference,
-          solution,
-          ClipperLib.PolyFillType.pftNonZero,
-          ClipperLib.PolyFillType.pftNonZero,
-        );
-
-        if (solution.length > 0) {
-          // Find the largest remaining polygon (this filters out microscopic artifact slivers)
-          let largestPoly = solution[0];
-          let maxArea = 0;
-          solution.forEach((poly) => {
-            const area = Math.abs(ClipperLib.Clipper.Area(poly));
-            if (area > maxArea) {
-              maxArea = area;
-              largestPoly = poly;
-            }
-          });
-
-          // 4. Overwrite the fabric profile with the newly cut shape!
-          this.loadedFabric.edgeProfile = largestPoly.map((p) => ({
-            x: p.X / scale,
-            y: p.Y / scale,
-          }));
-          this.saveState();
-        }
-      } else {
-        console.error(
-          "ClipperLib is not loaded. Cannot perform virtual fabric cut.",
-        );
-      }
-    });
-
-    document.addEventListener("HIGHLIGHT_SUBJOB", (e) => {
-      this.highlightedJob = e.detail;
-    });
-
-    document.addEventListener("SPAWN_INSTANCE", (e) => {
-      const piece = e.detail.piece;
-      let pos = { x: 50, y: -50 };
-
-      if (this.loadedFabric) {
-        const autoPos = Nester.placePiece(
-          piece,
-          this.loadedFabric,
-          this.placedInstances,
-        );
-        if (autoPos) pos = autoPos;
-      } else {
-        const cascade = (this.placedInstances.length * 15) % 150;
-        pos = { x: 50 + cascade, y: -50 - cascade };
-      }
-
-      this.placedInstances.push({
-        id: piece.name + "_" + Date.now() + Math.random(),
-        piece: piece,
-        x: pos.x,
-        y: pos.y,
-        rotation: 0,
-        nestingEnabled: true,
-      });
-      this.saveState();
-    });
-
-    document.addEventListener("REMOVE_INSTANCE", (e) => {
-      for (let i = this.placedInstances.length - 1; i >= 0; i--) {
-        if (this.placedInstances[i].piece.name === e.detail.piece.name) {
-          this.placedInstances.splice(i, 1);
-          this.saveState();
-          break;
-        }
-      }
-    });
-
-    document.addEventListener("TRACE_UPDATED", (e) => {
-      this.activeTracePoints = e.detail;
-    });
-
-    document.addEventListener("FABRIC_LOADED", (e) => {
-      const { fabric, isFreshTrace } = e.detail;
-      this.loadedFabric = fabric;
-      this.activeTracePoints = [];
-
-      if (isFreshTrace) {
-        this.fabricOffset = { x: 0, y: 0 };
-      } else {
-        let minX = Infinity;
-        fabric.edgeProfile.forEach((p) => {
-          if (p.x < minX) minX = p.x;
-        });
-
-        let maxYAtLeftEdge = -Infinity;
-        fabric.edgeProfile.forEach((p) => {
-          if (Math.abs(p.x - minX) < 0.001) {
-            if (p.y > maxYAtLeftEdge) maxYAtLeftEdge = p.y;
+      if (solution.length > 0) {
+        let largestPoly = solution[0];
+        let maxArea = 0;
+        solution.forEach((poly) => {
+          const area = Math.abs(ClipperLib.Clipper.Area(poly));
+          if (area > maxArea) {
+            maxArea = area;
+            largestPoly = poly;
           }
         });
 
-        this.fabricOffset = {
-          x: machine.currentPos.x - minX,
-          y: machine.currentPos.y - maxYAtLeftEdge,
-        };
-      }
-      this.saveState();
-      this.focusView(true);
-    });
-
-    // --- Interactive Direct Manipulation ---
-    this.canvas.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
-      const mouseWorld = this.screenToWorld(e.offsetX, e.offsetY);
-      const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-      const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-
-      if (e.shiftKey && this.loadedFabric) {
-        this.isDraggingFabric = true;
-        this.dragStart = { x: mouseWorld.x - ox, y: mouseWorld.y - oy };
-        return;
-      }
-
-      const localX = mouseWorld.x - ox;
-      const localY = mouseWorld.y - oy;
-
-      for (let i = this.placedInstances.length - 1; i >= 0; i--) {
-        const inst = this.placedInstances[i];
-        const worldPoly = inst.piece.vertices.map((v) => ({
-          x: inst.x + v.x,
-          y: inst.y + v.y,
+        this.loadedFabric.edgeProfile = largestPoly.map((p) => ({
+          x: p.X / scale,
+          y: p.Y / scale,
         }));
 
-        if (Nester.isPointInPolygon({ x: localX, y: localY }, worldPoly)) {
-          this.draggedInstance = inst;
-          this.dragMouseStart = { x: localX - inst.x, y: localY - inst.y };
-          if (inst.nestingEnabled) {
-            inst.nestingEnabled = false;
-            this.saveState();
-          }
-          document.body.style.cursor = "grabbing";
-          break;
-        }
+        this.completedJobs.clear();
+        this.maxLineByJob = {};
+        this.completedCutPaths = [];
+        this.globalCutLinePreview = null;
+
+        this.saveState();
+
+        document.dispatchEvent(new CustomEvent("COMPLETED_CUTS_UPDATED"));
+        document.dispatchEvent(new CustomEvent("CLEAR_GCODE_ENTIRELY"));
       }
     });
+  }
 
-    this.canvas.addEventListener("mousemove", (e) => {
-      const mouseWorld = this.screenToWorld(e.offsetX, e.offsetY);
-      const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-      const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-      const localX = mouseWorld.x - ox;
-      const localY = mouseWorld.y - oy;
+  setTool(toolName) {
+    if (this.tools[toolName]) {
+      this.currentTool = this.tools[toolName];
+    }
+  }
 
-      if (this.isDraggingFabric) {
-        this.fabricOffset.x = mouseWorld.x - this.dragStart.x;
-        this.fabricOffset.y = mouseWorld.y - this.dragStart.y;
-      } else if (this.draggedInstance) {
-        this.draggedInstance.x = localX - this.dragMouseStart.x;
-        this.draggedInstance.y = localY - this.dragMouseStart.y;
-      } else {
-        this.hoveredInstance = null;
-        for (let i = this.placedInstances.length - 1; i >= 0; i--) {
-          const inst = this.placedInstances[i];
-          const worldPoly = inst.piece.vertices.map((v) => ({
-            x: inst.x + v.x,
-            y: inst.y + v.y,
-          }));
-
-          if (Nester.isPointInPolygon({ x: localX, y: localY }, worldPoly)) {
-            this.hoveredInstance = inst;
-            document.body.style.cursor = "grab";
-            break;
-          }
-        }
-        if (!this.hoveredInstance && !this.isDraggingFabric) {
-          document.body.style.cursor = "default";
-        }
-      }
-    });
-
-    this.canvas.addEventListener("mouseup", () => {
-      this.isDraggingFabric = false;
-      this.draggedInstance = null;
-      this.saveState();
-    });
-
-    this.canvas.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      const mouseWorld = this.screenToWorld(e.offsetX, e.offsetY);
-      const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-      const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-      const localX = mouseWorld.x - ox;
-      const localY = mouseWorld.y - oy;
-
-      for (let i = this.placedInstances.length - 1; i >= 0; i--) {
-        const inst = this.placedInstances[i];
-        const worldPoly = inst.piece.vertices.map((v) => ({
-          x: inst.x + v.x,
-          y: inst.y + v.y,
-        }));
-
-        if (Nester.isPointInPolygon({ x: localX, y: localY }, worldPoly)) {
-          if (!inst.nestingEnabled) {
-            inst.nestingEnabled = true;
-            this.saveState();
-          }
-          break;
-        }
-      }
-    });
-
-    document.addEventListener("NESTING_GHOST_FRAME", (e) => {
-      this.isNestingLive = true;
-      this.ghostLayout = e.detail.layout;
-      this.ghostTestingPoly = e.detail.testingPoly;
-    });
-
-    document.addEventListener("PREVIEW_ITERATION", (e) => {
-      this.isNestingLive = false;
-
-      // THE FIX: Check if e.detail is an object (from ranking.js) or an array (from direct manipulation)
-      // and extract the layout array safely.
-      this.placedInstances = Array.isArray(e.detail)
-        ? e.detail
-        : e.detail.layout || [];
-
-      this.saveState();
-    });
-
-    document.addEventListener("STOP_NESTING", () => {
-      this.isNestingLive = false;
-      this.ghostLayout = [];
-      this.ghostTestingPoly = null;
-    });
-
-    this.hoverPreviewData = null;
-
-    document.addEventListener("HOVER_PREVIEW_START", (e) => {
-      this.hoverPreviewData = e.detail;
-    });
-
-    document.addEventListener("HOVER_PREVIEW_END", () => {
-      this.hoverPreviewData = null;
-    });
-
-    this.init();
+  undo() {
+    this.history.undo();
+  }
+  redo() {
+    this.history.redo();
   }
 
   saveState() {
+    if (!this.history.isRestoring) this.history.record();
     localStorage.setItem("savedFabric", JSON.stringify(this.loadedFabric));
     localStorage.setItem(
       "savedFabricOffset",
@@ -368,692 +403,12 @@ export class Visualizer {
   }
 
   gantryToPx(x) {
-    return {
-      x: this.viewport.offsetX + x * this.viewport.scale,
-      y: this.viewport.offsetY,
-    };
+    return this.input.gantryToPx(x);
   }
   worldToPx(x, y) {
-    return {
-      x: this.viewport.offsetX + x * this.viewport.scale,
-      y:
-        this.viewport.offsetY -
-        (y - machine.currentPos.y) * this.viewport.scale,
-    };
+    return this.input.worldToPx(x, y);
   }
   screenToWorld(screenX, screenY) {
-    return {
-      x: (screenX - this.viewport.offsetX) / this.viewport.scale,
-      y:
-        machine.currentPos.y -
-        (screenY - this.viewport.offsetY) / this.viewport.scale,
-    };
-  }
-
-  init() {
-    this.hasCenteredInitially = false;
-    this.resizeObserver = new ResizeObserver((entries) => {
-      for (let entry of entries) {
-        this.resize(entry.contentRect.width, entry.contentRect.height);
-      }
-    });
-    this.resizeObserver.observe(this.canvas);
-    this.canvas.addEventListener("wheel", (e) => this.handleScroll(e), {
-      passive: false,
-    });
-    this.animate();
-  }
-
-  resize(
-    newWidth = this.canvas.clientWidth,
-    newHeight = this.canvas.clientHeight,
-  ) {
-    this.canvas.width = newWidth;
-    this.canvas.height = newHeight;
-
-    this.focusView(!this.hasCenteredInitially);
-    this.hasCenteredInitially = true;
-  }
-
-  handleScroll(e) {
-    e.preventDefault();
-    this.viewport.targetY -= e.deltaY * 0.8;
-  }
-
-  //version no. 2.9
-
-  focusView(forceCenterY = false) {
-    const hudMargin = 320;
-    const availableW = this.canvas.width - hudMargin * 2;
-    const screenCenterX = hudMargin + availableW / 2;
-    const screenCenterY = this.canvas.height / 2;
-
-    if (this.loadedFabric && this.loadedFabric.edgeProfile) {
-      let minX = Infinity,
-        maxX = -Infinity,
-        minY = Infinity,
-        maxY = -Infinity;
-      this.loadedFabric.edgeProfile.forEach((p) => {
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
-      });
-
-      const fabricW = maxX - minX;
-
-      this.viewport.scale = availableW / (fabricW * 1.1);
-      if (this.viewport.scale > 1.2) this.viewport.scale = 1.2;
-
-      const worldCenterX = this.fabricOffset.x + minX + fabricW / 2;
-
-      this.viewport.offsetX =
-        screenCenterX - worldCenterX * this.viewport.scale;
-
-      if (forceCenterY) {
-        // THE FIX: Lock the camera directly to the tool's Y-axis center
-        this.viewport.targetY = screenCenterY;
-        this.viewport.offsetY = this.viewport.targetY;
-      }
-    } else {
-      this.viewport.scale = (availableW / this.bounds.width) * 0.6;
-      if (this.viewport.scale > 0.8) this.viewport.scale = 0.8;
-
-      const worldCenterX = this.bounds.width / 2;
-      this.viewport.offsetX =
-        screenCenterX - worldCenterX * this.viewport.scale;
-
-      if (forceCenterY) {
-        this.viewport.targetY = screenCenterY;
-        this.viewport.offsetY = this.viewport.targetY;
-      }
-    }
-  }
-
-  animate() {
-    const diff = this.viewport.targetY - this.viewport.offsetY;
-    if (Math.abs(diff) > 0.1) this.viewport.offsetY += diff * 0.05;
-    else this.viewport.offsetY = this.viewport.targetY;
-
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.drawGrid();
-    this.drawLoadedFabric();
-    this.drawLiveTrace();
-    this.drawHeading();
-    this.drawTool();
-
-    if (this.isNestingLive) {
-      this.drawPlacedInstances();
-      this.drawGhostFrame();
-    } else {
-      this.drawPlacedInstances();
-    }
-
-    if (this.hoverPreviewData) {
-      this.drawHoverPreview();
-    }
-
-    if (this.gcodeSolidData) {
-      // PRODUCTION VIEW: Show simulator and hide dashed instances
-      this.drawSimulator();
-      if (this.highlightedJob) this.drawSubJobHighlight();
-    } else {
-      // DESIGN VIEW: Show dashed instances and nesting ghosts
-      this.drawPlacedInstances();
-      if (this.isNestingLive) this.drawGhostFrame();
-      if (this.hoverPreviewData) this.drawHoverPreview();
-    }
-
-    requestAnimationFrame(() => this.animate());
-  }
-
-  drawPlacedInstances() {
-    this.dashOffset -= 0.5;
-    const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-    const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-
-    this.placedInstances.forEach((inst) => {
-      this.ctx.save();
-      const screenPos = this.worldToPx(inst.x + ox, inst.y + oy);
-      this.ctx.translate(screenPos.x, screenPos.y);
-      this.ctx.scale(this.viewport.scale, this.viewport.scale);
-
-      this.ctx.beginPath();
-      inst.piece.vertices.forEach((v, i) => {
-        if (i === 0) this.ctx.moveTo(v.x, -v.y);
-        else this.ctx.lineTo(v.x, -v.y);
-      });
-      this.ctx.closePath();
-
-      if (inst.nestingEnabled) {
-        this.ctx.strokeStyle = "#4a90e2";
-        this.ctx.lineWidth = 2 / this.viewport.scale;
-      } else {
-        this.ctx.strokeStyle = "black";
-        this.ctx.lineWidth =
-          (this.hoveredInstance === inst ? 3 : 2) / this.viewport.scale;
-      }
-
-      this.ctx.setLineDash([8 / this.viewport.scale, 8 / this.viewport.scale]);
-      this.ctx.lineDashOffset =
-        this.hoveredInstance === inst ? this.dashOffset : 0;
-      this.ctx.stroke();
-
-      const pointSize = 4 / this.viewport.scale;
-      const offset = pointSize / 2;
-      const squareColor = inst.nestingEnabled ? "#4a90e2" : "black";
-
-      inst.piece.vertices.forEach((v) => {
-        this.ctx.beginPath();
-        if (v.isCurve) {
-          this.ctx.fillStyle = "#ff0000";
-          this.ctx.arc(v.x, -v.y, offset, 0, Math.PI * 2);
-          this.ctx.fill();
-        } else {
-          this.ctx.fillStyle = squareColor;
-          this.ctx.rect(v.x - offset, -v.y - offset, pointSize, pointSize);
-          this.ctx.fill();
-        }
-      });
-      this.ctx.restore();
-    });
-  }
-
-  drawGhostFrame() {
-    if (!this.isNestingLive) return;
-    const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-    const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-
-    this.ghostLayout.forEach((inst) => {
-      this.ctx.save();
-      const screenPos = this.worldToPx(inst.x + ox, inst.y + oy);
-      this.ctx.translate(screenPos.x, screenPos.y);
-      this.ctx.scale(this.viewport.scale, this.viewport.scale);
-
-      this.ctx.beginPath();
-      inst.piece.vertices.forEach((v, i) => {
-        if (i === 0) this.ctx.moveTo(v.x, -v.y);
-        else this.ctx.lineTo(v.x, -v.y);
-      });
-      this.ctx.closePath();
-
-      this.ctx.strokeStyle = "rgba(74, 144, 226, 0.5)";
-      this.ctx.lineWidth = 1 / this.viewport.scale;
-      this.ctx.stroke();
-      this.ctx.fillStyle = "rgba(74, 144, 226, 0.05)";
-      this.ctx.fill();
-      this.ctx.restore();
-    });
-
-    if (this.ghostTestingPoly) {
-      this.ctx.save();
-      this.ctx.beginPath();
-      this.ghostTestingPoly.forEach((v, i) => {
-        const screenPos = this.worldToPx(v.x + ox, v.y + oy);
-        if (i === 0) this.ctx.moveTo(screenPos.x, screenPos.y);
-        else this.ctx.lineTo(screenPos.x, screenPos.y);
-      });
-      this.ctx.closePath();
-
-      this.ctx.strokeStyle = "#ff00ff";
-      this.ctx.lineWidth = 2;
-      this.ctx.stroke();
-      this.ctx.fillStyle = "rgba(255, 0, 255, 0.2)";
-      this.ctx.fill();
-      this.ctx.restore();
-    }
-  }
-
-  drawLiveTrace() {
-    if (this.activeTracePoints.length === 0) return;
-    this.ctx.beginPath();
-    this.ctx.strokeStyle = "#2BEA64";
-    this.ctx.setLineDash([5, 5]);
-    this.ctx.lineWidth = 2;
-
-    this.activeTracePoints.forEach((p, index) => {
-      const screenPos = this.worldToPx(p.x, p.y);
-      if (index === 0) this.ctx.moveTo(screenPos.x, screenPos.y);
-      else this.ctx.lineTo(screenPos.x, screenPos.y);
-    });
-    this.ctx.stroke();
-    this.ctx.setLineDash([]);
-
-    this.ctx.fillStyle = "#2BEA64";
-    this.activeTracePoints.forEach((p) => {
-      const screenPos = this.worldToPx(p.x, p.y);
-      this.ctx.beginPath();
-      this.ctx.arc(screenPos.x, screenPos.y, 4, 0, Math.PI * 2);
-      this.ctx.fill();
-    });
-  }
-
-  drawLoadedFabric() {
-    if (
-      !this.loadedFabric ||
-      !this.loadedFabric.edgeProfile ||
-      this.loadedFabric.edgeProfile.length === 0
-    )
-      return;
-
-    this.ctx.save();
-    const hexColor = this.loadedFabric.color || "#cccccc";
-    this.ctx.fillStyle = hexColor + "33";
-    this.ctx.strokeStyle = hexColor;
-    this.ctx.lineWidth = 2;
-    if (this.isDraggingFabric) this.ctx.setLineDash([5, 5]);
-
-    const profile = this.loadedFabric.edgeProfile;
-    const ox = this.fabricOffset.x;
-    const oy = this.fabricOffset.y;
-
-    this.ctx.beginPath();
-    profile.forEach((p, i) => {
-      const screenPos = this.worldToPx(p.x + ox, p.y + oy);
-      if (i === 0) this.ctx.moveTo(screenPos.x, screenPos.y);
-      else this.ctx.lineTo(screenPos.x, screenPos.y);
-    });
-    this.ctx.closePath();
-    this.ctx.fill();
-    this.ctx.stroke();
-    this.ctx.restore();
-  }
-
-  drawGrid() {
-    const { ctx, viewport, bounds, canvas } = this;
-    const machineY = machine.currentPos.y;
-    const leftEdge = this.viewport.offsetX;
-    const rightEdge = this.viewport.offsetX + bounds.width * viewport.scale;
-
-    ctx.strokeStyle = "#d0d0d0";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(leftEdge, 0);
-    ctx.lineTo(leftEdge, canvas.height);
-    ctx.moveTo(rightEdge, 0);
-    ctx.lineTo(rightEdge, canvas.height);
-    ctx.stroke();
-
-    const dotSpacing = 10;
-    ctx.fillStyle = "#bbb";
-    const startY =
-      Math.floor((machineY - viewport.offsetY / viewport.scale) / dotSpacing) *
-      dotSpacing;
-    const endY =
-      startY + Math.floor(canvas.height / viewport.scale) + dotSpacing * 2;
-
-    for (let x = 0; x <= bounds.width; x += dotSpacing) {
-      for (let y = startY; y <= endY; y += dotSpacing) {
-        const screenPos = this.worldToPx(x, y);
-        ctx.fillRect(screenPos.x - 0.5, screenPos.y - 0.5, 1, 1);
-      }
-    }
-
-    ctx.strokeStyle = "rgba(153, 0, 0, 0.4)";
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(leftEdge, viewport.offsetY);
-    ctx.lineTo(rightEdge, viewport.offsetY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  drawHeading() {
-    const { ctx, controller } = this;
-    if (!controller || controller.activeAngle === null) return;
-    const pos = machine.currentPos;
-    const screenPos = this.gantryToPx(pos.x);
-    const gp = navigator.getGamepads()[0];
-    const lt = gp ? gp.buttons[6].value : 0;
-    const vectorLen = 20 + lt * 100;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(screenPos.x, screenPos.y);
-    ctx.lineTo(
-      screenPos.x + Math.cos(controller.activeAngle) * vectorLen,
-      screenPos.y - Math.sin(controller.activeAngle) * vectorLen,
-    );
-    ctx.strokeStyle = `rgba(153, 0, 0, ${0.3 + lt * 0.7})`;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 3]);
-    ctx.stroke();
-
-    ctx.fillStyle = `rgba(153, 0, 0, ${0.3 + lt * 0.7})`;
-    ctx.beginPath();
-    ctx.arc(
-      screenPos.x + Math.cos(controller.activeAngle) * vectorLen,
-      screenPos.y - Math.sin(controller.activeAngle) * vectorLen,
-      3,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-    ctx.restore();
-  }
-
-  drawTool() {
-    const { ctx, viewport } = this;
-    const pos = machine.currentPos;
-    const screenPos = this.gantryToPx(pos.x);
-
-    const zLimit = -13;
-    const zCurrent = Math.max(zLimit, Math.min(0, pos.z));
-    const zProgress = zCurrent / zLimit;
-    const currentDia = 20 - zProgress * 19;
-    const currentAlpha = 0.1 + zProgress * 0.9;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(screenPos.x, screenPos.y, currentDia / 2, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(153, 0, 0, ${currentAlpha})`;
-    ctx.fill();
-    ctx.restore();
-
-    ctx.beginPath();
-    ctx.arc(
-      screenPos.x,
-      screenPos.y,
-      this.toolRadius * viewport.scale,
-      0,
-      Math.PI * 2,
-    );
-    ctx.strokeStyle = "#aaa";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    const adjustedAngle = Math.PI - pos.a;
-    const lineLen = this.toolRadius * viewport.scale;
-
-    ctx.fillStyle = "#900";
-    ctx.beginPath();
-    ctx.arc(screenPos.x, screenPos.y, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(screenPos.x, screenPos.y);
-    ctx.lineTo(
-      screenPos.x + Math.cos(adjustedAngle) * lineLen,
-      screenPos.y + Math.sin(adjustedAngle) * lineLen,
-    );
-    ctx.strokeStyle = "#900";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-
-  drawHoverPreview() {
-    if (
-      !this.hoverPreviewData ||
-      !this.hoverPreviewData.layout ||
-      this.hoverPreviewData.layout.length === 0
-    )
-      return;
-
-    const layout = this.hoverPreviewData.layout;
-    const cutLine = this.hoverPreviewData.cutLine;
-
-    const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-    const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-
-    let minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
-
-    // 1. Draw the light grey ghost pieces and calculate bounds simultaneously
-    layout.forEach((inst) => {
-      this.ctx.save();
-      const screenPos = this.worldToPx(inst.x + ox, inst.y + oy);
-      this.ctx.translate(screenPos.x, screenPos.y);
-      this.ctx.scale(this.viewport.scale, this.viewport.scale);
-
-      this.ctx.beginPath();
-      inst.piece.vertices.forEach((v, i) => {
-        // Track absolute world bounds for the bounding box
-        const worldX = inst.x + v.x;
-        const worldY = inst.y + v.y;
-        if (worldX < minX) minX = worldX;
-        if (worldX > maxX) maxX = worldX;
-        if (worldY < minY) minY = worldY;
-        if (worldY > maxY) maxY = worldY;
-
-        // Draw the polygon
-        if (i === 0) this.ctx.moveTo(v.x, -v.y);
-        else this.ctx.lineTo(v.x, -v.y);
-      });
-      this.ctx.closePath();
-
-      // Style: Very Light Grey
-      this.ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
-      this.ctx.lineWidth = 1 / this.viewport.scale;
-      this.ctx.stroke();
-      this.ctx.fillStyle = "rgba(0, 0, 0, 0.05)";
-      this.ctx.fill();
-      this.ctx.restore();
-    });
-
-    // 2. Draw the incredibly faint bounding box around the entire layout
-    if (cutLine && this.loadedFabric && this.loadedFabric.edgeProfile) {
-      this.ctx.save();
-
-      // Step A: Confine all rendering to the exact bounds of the fabric
-      this.ctx.beginPath();
-      this.loadedFabric.edgeProfile.forEach((p, i) => {
-        const screenPos = this.worldToPx(p.x + ox, p.y + oy);
-        if (i === 0) this.ctx.moveTo(screenPos.x, screenPos.y);
-        else this.ctx.lineTo(screenPos.x, screenPos.y);
-      });
-      this.ctx.clip(); // Creates a GPU mask out of the fabric shape
-
-      // Step B: Draw the "Usable Area" bounding polygon down to the cut line
-      this.ctx.beginPath();
-      // Start way up high to encompass the top edge
-      this.ctx.moveTo(-10000, -10000);
-      this.ctx.lineTo(this.canvas.width + 10000, -10000);
-
-      // Trace the cut line backwards
-      for (let i = cutLine.length - 1; i >= 0; i--) {
-        const pt = this.worldToPx(cutLine[i].x + ox, cutLine[i].y + oy);
-        this.ctx.lineTo(pt.x, pt.y);
-      }
-      this.ctx.closePath();
-
-      // Very faint blue wash indicating the Area denominator
-      this.ctx.fillStyle = "rgba(74, 144, 226, 0.08)";
-      this.ctx.fill();
-
-      // Step C: Draw the physical cut line in dashed red
-      this.ctx.beginPath();
-      cutLine.forEach((p, i) => {
-        const pt = this.worldToPx(p.x + ox, p.y + oy);
-        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
-        else this.ctx.lineTo(pt.x, pt.y);
-      });
-
-      this.ctx.strokeStyle = "rgba(255, 60, 60, 0.8)"; // Red Cutting Path
-      this.ctx.setLineDash([10, 6]);
-      this.ctx.lineWidth = 2 / this.viewport.scale;
-      this.ctx.stroke();
-
-      this.ctx.restore();
-    }
-  }
-
-  drawSimulator() {
-    const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-    const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-
-    // PARALLAX HELPER: Scales floating points outward from the screen center
-    const applyParallax = (px, isFloating) => {
-      if (!isFloating) return px;
-      const cx = this.canvas.width / 2;
-      const cy = this.canvas.height / 2;
-      return {
-        x: cx + (px.x - cx) * 1.02,
-        y: cy + (px.y - cy) * 1.02 - 8, // Shift slightly up toward the camera
-      };
-    };
-
-    this.ctx.save();
-    const allJobs = [...this.simulatorJobs];
-    if (this.simulatorCutJob) allJobs.push(this.simulatorCutJob);
-
-    allJobs.forEach((job) => {
-      job.simPaths.forEach((path) => {
-        if (path.type === "G0" || path.type === "G1") {
-          const isFloat = path.type === "G0";
-          const p1 = applyParallax(
-            this.worldToPx(path.p1.x + ox, path.p1.y + oy),
-            isFloat,
-          );
-          const p2 = applyParallax(
-            this.worldToPx(path.p2.x + ox, path.p2.y + oy),
-            isFloat,
-          );
-
-          this.ctx.beginPath();
-          this.ctx.moveTo(p1.x, p1.y);
-          this.ctx.lineTo(p2.x, p2.y);
-
-          if (isFloat) {
-            this.ctx.strokeStyle = "rgba(255, 60, 60, 0.4)";
-            this.ctx.setLineDash([3, 4]);
-            this.ctx.lineWidth = 1;
-          } else {
-            this.ctx.strokeStyle = "rgba(0, 0, 0, 0.3)";
-            this.ctx.setLineDash([]);
-            this.ctx.lineWidth = 1.5 / this.viewport.scale;
-          }
-          this.ctx.stroke();
-        }
-      });
-    });
-    this.ctx.restore();
-  }
-
-  drawSubJobHighlight() {
-    const ox = this.loadedFabric ? this.fabricOffset.x : 0;
-    const oy = this.loadedFabric ? this.fabricOffset.y : 0;
-    const job = this.highlightedJob;
-
-    const applyParallax = (px, isFloating) => {
-      if (!isFloating) return px;
-      const cx = this.canvas.width / 2;
-      const cy = this.canvas.height / 2;
-      return { x: cx + (px.x - cx) * 1.03, y: cy + (px.y - cy) * 1.03 - 12 };
-    };
-
-    // WEDGE HELPER: Draws a faked Conic Gradient for the A-Axis sweep
-    const drawWedge = (px, a1, a2, isFloating) => {
-      let delta = a2 - a1;
-      while (delta > Math.PI) delta -= 2 * Math.PI;
-      while (delta < -Math.PI) delta += 2 * Math.PI;
-
-      const slices = 15;
-      const radius = isFloating ? 18 : 12;
-      const baseRgb = isFloating ? "255, 60, 60" : "43, 234, 100";
-
-      for (let i = 1; i <= slices; i++) {
-        const f0 = (i - 1) / slices;
-        const f1 = i / slices;
-        const cA1 = -(a1 + delta * f0); // Canvas Y is inverted
-        const cA2 = -(a1 + delta * f1);
-
-        this.ctx.beginPath();
-        this.ctx.moveTo(px.x, px.y);
-        this.ctx.arc(px.x, px.y, radius, cA1, cA2, delta > 0);
-        this.ctx.closePath();
-
-        this.ctx.fillStyle = `rgba(${baseRgb}, ${f1 * 0.7})`;
-        this.ctx.fill();
-      }
-
-      // Solid leading edge
-      this.ctx.beginPath();
-      this.ctx.moveTo(px.x, px.y);
-      this.ctx.lineTo(
-        px.x + Math.cos(-(a1 + delta)) * radius * 1.2,
-        px.y + Math.sin(-(a1 + delta)) * radius * 1.2,
-      );
-      this.ctx.strokeStyle = `rgba(${baseRgb}, 1)`;
-      this.ctx.lineWidth = 2;
-      this.ctx.stroke();
-    };
-
-    this.ctx.save();
-
-    const screenTopY = this.worldToPx(0, job.topY + oy).y;
-    const screenBottomY = this.worldToPx(0, job.bottomY + oy).y;
-    this.ctx.fillStyle = "rgba(43, 234, 100, 0.08)";
-    this.ctx.fillRect(
-      0,
-      screenTopY,
-      this.canvas.width,
-      screenBottomY - screenTopY,
-    );
-
-    // First Pass: Draw all cuts (Z-Down) so they sit underneath
-    job.simPaths.forEach((path) => {
-      if (path.type === "G1") {
-        const p1 = applyParallax(
-          this.worldToPx(path.p1.x + ox, path.p1.y + oy),
-          false,
-        );
-        const p2 = applyParallax(
-          this.worldToPx(path.p2.x + ox, path.p2.y + oy),
-          false,
-        );
-        this.ctx.beginPath();
-        this.ctx.moveTo(p1.x, p1.y);
-        this.ctx.lineTo(p2.x, p2.y);
-        this.ctx.strokeStyle = job.isCutLine ? "#ff3c3c" : "#2BEA64";
-        this.ctx.setLineDash([]);
-        this.ctx.lineWidth = 3 / this.viewport.scale;
-        this.ctx.stroke();
-      } else if (path.type === "PIVOT_MAT") {
-        const px = applyParallax(
-          this.worldToPx(path.p.x + ox, path.p.y + oy),
-          false,
-        );
-        drawWedge(px, path.a1, path.a2, false);
-      }
-    });
-
-    // Second Pass: Draw all rapids and lifts (Z-Up) so they float on top
-    job.simPaths.forEach((path) => {
-      if (path.type === "G0") {
-        const p1 = applyParallax(
-          this.worldToPx(path.p1.x + ox, path.p1.y + oy),
-          true,
-        );
-        const p2 = applyParallax(
-          this.worldToPx(path.p2.x + ox, path.p2.y + oy),
-          true,
-        );
-
-        // Faint drop shadow to sell the 3D effect
-        this.ctx.shadowColor = "rgba(0,0,0,0.3)";
-        this.ctx.shadowBlur = 6;
-        this.ctx.shadowOffsetY = 8;
-
-        this.ctx.beginPath();
-        this.ctx.moveTo(p1.x, p1.y);
-        this.ctx.lineTo(p2.x, p2.y);
-        this.ctx.strokeStyle = "rgba(255, 60, 60, 0.9)";
-        this.ctx.setLineDash([6, 6]);
-        this.ctx.lineWidth = 1.5;
-        this.ctx.stroke();
-
-        this.ctx.shadowColor = "transparent"; // Reset shadow
-      } else if (path.type === "PIVOT_AIR") {
-        const px = applyParallax(
-          this.worldToPx(path.p.x + ox, path.p.y + oy),
-          true,
-        );
-        drawWedge(px, path.a1, path.a2, true);
-      }
-    });
-
-    this.ctx.restore();
+    return this.input.screenToWorld(screenX, screenY);
   }
 }

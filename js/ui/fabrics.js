@@ -1,12 +1,14 @@
 // js/ui/fabrics.js
-//version no. 2.1
+//version no. 2.2
 
 export class FabricMenu {
-  // THE FIX: containerEl must be declared right here in the parentheses first
-  constructor(containerEl, serverUrl = "http://localhost:3000") {
+  // THE FIX: Added vizRef to the constructor parameters!
+  constructor(containerEl, vizRef, serverUrl = "http://localhost:3000") {
     this.serverUrl = serverUrl;
     this.fabrics = [];
-    this.activeFabric = null;
+    this.viz = vizRef;
+    this.activeFabric =
+      this.viz && this.viz.loadedFabric ? this.viz.loadedFabric : null;
 
     // Map the floating window content area to your existing sidebarEl variable
     this.sidebarEl = containerEl;
@@ -172,7 +174,8 @@ export class FabricMenu {
     menu.style.top = `${e.clientY}px`;
 
     menu.innerHTML = `
-            <div class="context-menu-item" id="ctx-edit">Edit</div>
+            <div class="context-menu-item" id="ctx-edit">Edit Metadata</div>
+            <div class="context-menu-item" id="ctx-sync">Update (Save Canvas State)</div>
             <div class="context-menu-item" id="ctx-dup">Duplicate</div>
             <div class="context-menu-item danger" id="ctx-del">Delete</div>
         `;
@@ -183,6 +186,24 @@ export class FabricMenu {
       this.openFabricModal(fabric);
     menu.querySelector("#ctx-dup").onclick = () => this.duplicateFabric(fabric);
     menu.querySelector("#ctx-del").onclick = () => this.deleteFabric(fabric.id);
+
+    const syncBtn = menu.querySelector("#ctx-sync");
+    if (this.viz && this.activeFabric && this.activeFabric.id === fabric.id) {
+      syncBtn.onclick = async () => {
+        if (this.viz.loadedFabric) {
+          const payload = {
+            ...this.activeFabric,
+            edgeProfile: this.viz.loadedFabric.edgeProfile,
+          };
+          await this.updateFabricOnServer(payload);
+          this.closeContextMenu();
+        }
+      };
+    } else {
+      syncBtn.style.opacity = "0.4";
+      syncBtn.style.pointerEvents = "none";
+      syncBtn.title = "Fabric must be active on canvas to sync.";
+    }
   }
 
   closeContextMenu() {

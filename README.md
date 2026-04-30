@@ -1,91 +1,78 @@
-# System Update Architecture & Changelog: The "Glass HUD & Vector" Update
+# Knife Controller & CAM Architecture: Feature List
 
-This document serves as a comprehensive, technical breakdown of the recent architectural overhaul applied to the UI, Visualizer, and Core CNC logic. The system has been transitioned from a static, sidebar-bound layout into a dynamic, event-driven floating HUD environment with highly optimized performance loops.
+## Backend Server & API (`/`, `server.js`)
 
----
+- **Dynamic DXF Discovery**
+  Scans local directories and sorts available CAD files by modification date to build a nested hierarchy.
+- **Fabric Database API**
+  Implements full CRUD (Create, Read, Update, Delete) REST operations for managing material inventory via a flat JSON file.
 
-## 1. Window Management & Glassmorphic UI (`window.js` & CSS Modules)
+## Core Engines & Mathematics (`js/core/`)
 
-### CSS Modularization
+- **Tangential Knife Compensation (`slicer.js`)**
+  Automatically applies calculated corner overcuts and inside undercuts based on blade geometry and lift angle thresholds.
+- **Nearest-Neighbor Path Optimizer (`slicer.js`)**
+  Re-orders cutting lines and intelligently reverses cut direction (swapping p1/p2) to dramatically minimize rapid gantry movements.
+- **Vector Deduplication (`slicer.js`)**
+  Analyzes geometry to merge overlapping segments, ensuring the knife never cuts the same shared edge twice.
+- **Evolutionary Nesting Worker (`worker.js`, `nester.js`)**
+  A Web Worker that breeds high-yield layouts using Genetic Algorithms, Order 1 Crossover, and sequence mutations.
+- **Geometric Drop Heuristics (`worker.js`)**
+  Packs shapes using advanced placement algorithms including gravity drops, true-shape NFP, and topographic valley sweeps.
+- **SPJS Hardware Bridge (`spjs.js`)**
+  Maintains a resilient WebSocket connection to a Serial Port JSON Server for bi-directional TinyG communication.
+- **Kinematic Machine State (`machine.js`)**
+  Tracks global absolute coordinates (X, Y, Z, A), buffer status, and machine operation modes in real-time.
+- **Gamepad Vector Drive (`controller.js`)**
+  Translates raw analog joystick inputs into continuous, real-time tangent vector moves to manually drive the machine head.
+- **Physical Digitizer (`tracer.js`)**
+  Logs physical gantry coordinates via gamepad button presses to generate digital edge profiles of oddly shaped scrap remnants.
 
-The monolithic `style.css` was fully decommissioned and split into domain-specific modules (`main.css`, `window.css`, `dro.css`, `browser.css`, `queue.css`, `modals.css`, and `hud.css`). This significantly reduces CSS recalculation overhead and isolates UI boundaries.
+## Rendering & Canvas Visualizer (`js/visualizer/`)
 
-- **The Empty Node Fix:** Applied `:empty` pseudo-classes to dynamically generated `.status-text` elements, preventing the browser from rendering orphaned padding boxes (the "floating hyphens") when status spans are unpopulated.
+- **State Orchestrator (`canvas.js`)**
+  Centralizes active layout, tool selection, and job simulation states into a single decoupled hub.
+- **Hardware-Synced Cut Tracking (`canvas.js`)**
+  Passively tracks the physical gantry position and permanently marks digital lines as "cut" when the machine passes over them.
+- **Morphological Cut-Line Generator (`canvas.js`)**
+  Calculates a smooth "guillotine" cut line below completed operations to efficiently sever used fabric from the roll.
+- **High-Performance Render Loop (`renderer.js`)**
+  Utilizes `requestAnimationFrame` to continuously draw grids, fabrics, active tool paths, ghost layouts, and G-code simulations.
+- **Rapid Jog Aiming (`input.js`)**
+  Holding Alt draws a dashed heading line to the cursor and rotates the A-axis; clicking triggers a rapid G0 move to that coordinate.
+- **Persistent History Manager (`history.js`)**
+  Maintains a state snapshot stack for seamless Ctrl+Z / Ctrl+Y undo/redo functionality and local storage persistence.
+- **Selection State Manager (`selection.js`)**
+  Handles click-toggling, bounding-box multi-selection, and isolation of custom nesting mask geometry.
 
-### Dynamic Window Engine (`WidgetWindow`)
+## Interactive Canvas Toolkit (`js/visualizer/tools.js`)
 
-The floating window class has been entirely rewritten to support true fluid behavior and absolute z-index stacking.
+- **Select & Drag Tool (`SelectTool`, `FabricDragTool`)**
+  Allows dragging individual patterns, shifting the virtual fabric bed to match reality, and right-clicking parts to toggle their nestability.
+- **Smart Polyline Tool (`DrawPolyTool`)**
+  Draws custom cuts that automatically snap into closed polygons if the cursor approaches the origin point.
+- **Nesting Masks (`FreeMaskTool`, `BoxMaskTool`, `PolyMaskTool`)**
+  Utilizes ClipperLib boolean intersection math to define explicit zones where the auto-nester is permitted to place parts.
+- **Destructive Fabric Chopping (`CutFabricTool`, `PolyCutTool`)**
+  Uses boolean difference operations to permanently slice off sections of the virtual fabric outline, simulating physical scrap removal.
 
-- **Race Condition Resolution:** Implemented a 50ms asynchronous deferral on boot up (`checkSnapOnLoad`), guaranteeing all windows are instantiated with their `localStorage` coordinates before the stacking engine attempts to mathematically sort them.
-- **Fluid Resizing:** Unlocked horizontal resizing boundaries. Bound native `mousedown` event listeners to left/right border invisible resizers, intercepting standard cursor interactions with `e.preventDefault()` to stop unintended text highlighting.
-- **The "Shrink-Wrap" AutoFit Engine:** Solved the Flexbox DOM measurement dilemma. When `.autoFit` is triggered, the engine invisibly strips the `400px` minimum CSS height, forces a synchronous DOM reflow (`offsetHeight`), calculates the exact pixel footprint of the child elements, and restores the CSS boundaries before the next animation frame. This allows dynamic windows (like the Job Queue and File Browser) to perfectly hug their contents.
+## User Interface & Floating Widgets (`js/ui/`)
 
----
-
-## 2. The Vector Drive & CNC Controller (`controller.js`)
-
-The gamepad input engine has been upgraded to support high-speed streaming without sacrificing cornering accuracy.
-
-- **Delta Angle Snapping:** Previously, extreme changes in the Left Joystick trajectory would result in rounded corners due to the G-Code commands already waiting in the TinyG buffer. The new engine stores the `drivingAngle` from the previous 50ms frame and compares it against the active input.
-- **Buffer Flushing:** If a flick or sharp turn exceeds the `angleSnapThreshold` (~20 degrees / 0.35 radians), the system bypasses standard deceleration, instantly broadcasting a Feed Hold (`!`) and Queue Flush (`%`). The very next 50ms cycle then begins a fresh vector stride from the absolute true physical location.
-- **Y-Axis Toggle State:** Hardcoded the Y button to act as an absolute offset toggle (+/- 450mm) for material reveal, ensuring it interacts cleanly with standard XYZA homing routines.
-
----
-
-## 3. The Visualizer & Dynamic Camera (`canvas.js`)
-
-The Canvas engine transitioned from an array-diffing loop to a high-efficiency 1:1 event-based listener system, significantly dropping CPU load during DOM manipulation.
-
-### Event-Driven Sync
-
-- Replaced the heavy `syncQueueState` function. The canvas now listens natively to `SPAWN_INSTANCE` and `REMOVE_INSTANCE` events.
-- Instances are spawned using a fast bounding-box sweep if fabric is present, or a cascading diagonal mathematical offset if no fabric exists, preventing visual overlap.
-- Removal operates on a reverse iteration loop (`i--`), ensuring only the absolute newest placement of a given ID is popped from the visual array.
-
-### The Dynamic Camera (`focusView`)
-
-The static zoom has been replaced by an autonomous framing engine.
-
-- When no fabric is active, the camera scales the world to 60%, perfectly centering the physical machine gantry on the screen for comfortable jogging operations.
-- **Width-Lock Math:** When fabric is loaded, the camera strips Y-axis constraints from its scale calculations to prevent "Infinite Roll" zooming. It calculates the `minX` and `maxX` boundaries of the newly traced fabric, applies a 10% breathing margin, and fits it exactly horizontally between the floating HUD windows.
-- **Y-Axis Inversion Fix:** The target Y coordinate locks to the `maxY` world coordinate (the top edge in CAD space) and perfectly aligns it with the physical tool location.
-
-### Bounding Box Hover Projections
-
-- Intercepts `HOVER_PREVIEW` events from the nesting leaderboard.
-- Draws the selected genetic iteration in a light-grey ghost wash directly over the active blue configuration.
-- Computes absolute min/max coordinate sweeps across all previewed shapes dynamically in the render loop, projecting a faint dashed blue bounding box to indicate total material consumption.
-
----
-
-## 4. Job Builder & Queue Engine (`queue.js`)
-
-Completely abandoned the vertical stack design for an ultra-compressed horizontal grid layout.
-
-- **Direct Manipulation UX:** Removed bulky increment/decrement buttons. Hovering over a pattern now displays a single floating delete anchor. Left-clicking the thumbnail dispatches an addition; right-clicking intercepts the browser's context menu to dispatch a subtraction.
-- **Absolute Positioning Constraints:** Items are locked to a strict 32x32px CSS grid with `flex-shrink: 0`, and the quantity label floats directly inside the `canvas` element to prevent DOM reflow shifting during incrementation.
-
----
-
-## 5. Genetic Algorithm & Leaderboard (`worker.js` & `ranking.js`)
-
-The Web Worker architecture driving the NFP (No-Fit Polygon) engine has been modified to stream real-time results rather than waiting for generational completion.
-
-### Live Telemetry
-
-- The Worker intercepts the population array every 10% step. It calculates the overall `genProgress` and streams the current state of the global top 10 layouts back to the main thread.
-- **Dual Progress Bars:** The Ranking UI grabs this telemetry and draws two overlapping transparent progress bars directly into the parent window's header (`.window-header` background injection). Blue represents total completion, while green visually beats with the current generation's scan rate.
-
-### The Historical Snapshot Engine
-
-- When the user presses "▶ RUN NEST", the UI freezes the active layout state.
-- It calculates the absolute top 3 layouts from the prior run (or the top 2 + the actively selected outlier layout).
-- These specific iterations are injected with a `isRetained` flag, mapping them to persistent `Prev-1`, `Prev-2` ID labels. They are segregated below a visual divider, preserving a timeline of previous genetic elites alongside the live incoming data stream.
-
----
-
-## 6. System Utility Refinements
-
-- **DRO Expansion:** Stripped the `200px` fixed-width limit from the DRO (`dro.js`). The jogging pad now utilizes standard `100%` CSS Grid fractionals, expanding fluidly to fill any dimensions dragged by the user.
-- **File Browser Date Sort:** Added a recursive `mtime` sorting algorithm to `browser.js`. The DOM injection now natively extracts timestamp metadata, pushing the most recently modified DXF files to the top of their respective folders, while displaying an inline "Oct 24, 2:30 PM" tag beneath the file ID.
-- **Modal Layer Management:** Forced `fabricTracer.js` to utilize explicit `z-index: 9999` constraints, escaping the local DOM stacking context to ensure instructions overlay the active Gantry visuals while preserving the `pointer-events` pass-through necessary to operate the DRO controls simultaneously.
+- **Desktop-Style Window Manager (`window.js`)**
+  Creates floating, draggable, dockable widget windows with edge-snapping and dynamic flex-height expansion.
+- **G-Code Job Tree (`gcode.js`)**
+  Slices massive layouts into horizontal bands (sub-jobs) to accommodate machines that require manual fabric unrolling.
+- **Smart Execution & Playback (`gcode.js`)**
+  Allows pausing, aborting, or seamlessly resuming a sub-job from any specific clicked line of G-code.
+- **Live Line Highlighting (`gcode.js`)**
+  Reads line numbers from TinyG serial reports to smoothly auto-scroll and highlight the exact line of code currently executing.
+- **DXF Ingestion & Arc Tessellation (`browser.js`)**
+  Parses CAD files and interpolates perfect mathematical curves into CNC-ready tiny line segments based on configurable limits.
+- **Material Inventory UI (`fabrics.js`)**
+  Manages raw roll data and displays scaled digital thumbnails of the physical fabric profiles.
+- **Evolutionary Leaderboard (`ranking.js`)**
+  Displays the live leaderboard of nesting algorithms as they process, allowing users to hover for a visual yield preview.
+- **Safety Digital Read-Out (`dro.js`)**
+  Provides jog controls, homing limits, and an input safety lock that forces Z-axis entries to be negative to prevent collisions.
+- **Dynamic Coordinate Cursor (`cursor.js`)**
+  A floating HUD element that reveals live canvas coordinates or rich metadata depending on hover priority.

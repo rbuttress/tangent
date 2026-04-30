@@ -911,9 +911,19 @@ function sortByAreaDesc(pieces) {
 
 // --- WORKER EVENT LISTENER & MAIN EVOLUTION LOOP ---
 self.onmessage = function (e) {
-  const { fabric, pieces, config, manualPieces } = e.data;
+  const { pieces, config, manualPieces, activeMask } = e.data;
+  let fabric = e.data.fabric;
+
+  // THE FIX: Override the fabric profile if a local mask is active.
+  // This instantly constrains the fBox, Clipper math, and all 7 heuristic strategies!
+  if (activeMask) {
+    fabric = { ...fabric, edgeProfile: activeMask };
+  }
+
   let globalBestResults = [];
   let lastKnownUiPayload = [];
+
+  // fBox will now naturally be the bounding box of the mask!
   const fBox = getBoundingBox(fabric.edgeProfile);
   const resolutionStep = 4;
   let lastBroadcast = Date.now();
@@ -1077,7 +1087,7 @@ self.onmessage = function (e) {
         const cutLine = generateBottomCutLine(
           currentLayout,
           fBox,
-          fabric, // <-- THE FIX: Pass the fabric object here
+          fabric,
           5,
           cutLineRadius,
         );
@@ -1090,7 +1100,7 @@ self.onmessage = function (e) {
             Y: Math.round(fBox.y * 1000),
           },
         ];
-        // Trace the cut line backwards to close the loop
+
         for (let i = cutLine.length - 1; i >= 0; i--) {
           slicePoly.push({
             X: Math.round(cutLine[i].x * 1000),
@@ -1108,22 +1118,10 @@ self.onmessage = function (e) {
         }));
         clip.push(fabPoly);
 
-        const cleanSubj = ClipperLib.Clipper.SimplifyPolygons(
-          subj,
-          ClipperLib.PolyFillType.pftNonZero,
-        );
-        const cleanClip = ClipperLib.Clipper.SimplifyPolygons(
-          clip,
-          ClipperLib.PolyFillType.pftNonZero,
-        );
-
         const solution = new ClipperLib.Paths();
         const c = new ClipperLib.Clipper();
-        c.StrictlySimple = true; // Force strict parsing
-
-        // Use the cleaned paths
-        c.AddPaths(cleanSubj, ClipperLib.PolyType.ptSubject, true);
-        c.AddPaths(cleanClip, ClipperLib.PolyType.ptClip, true);
+        c.AddPaths(subj, ClipperLib.PolyType.ptSubject, true);
+        c.AddPaths(clip, ClipperLib.PolyType.ptClip, true);
         c.Execute(
           ClipperLib.ClipType.ctIntersection,
           solution,
@@ -1131,26 +1129,27 @@ self.onmessage = function (e) {
           ClipperLib.PolyFillType.pftNonZero,
         );
 
-        // 4. Calculate final area of the true Boolean shape
         let usableArea = 0;
         for (let i = 0; i < solution.length; i++) {
           usableArea +=
             Math.abs(ClipperLib.Clipper.Area(solution[i])) / 1000000;
         }
 
+        // Calculate score specific to the active mask
         const score = usableArea === 0 ? 0 : (totalUsedArea / usableArea) * 100;
 
-        // THE FIX: Save the cutLine directly into the result object so it persists to local storage!
         const resultObj = {
+          id: `g${gen + 1}-p${popIdx + 1}_${Date.now()}`,
           score: score,
           layout: currentLayout,
           sequence: attemptOrder,
           cutLine: cutLine,
+          gen: gen + 1, // Pass Generation to UI
+          pop: popIdx + 1, // Pass Population to UI
         };
         generationResults.push(resultObj);
 
-        // THE FIX: LIVE-STREAMING LEADERBOARD
-        // Instantly push this successful run to the global pool and sort it
+        // LIVE-STREAMING LEADERBOARD
         globalBestResults.push(resultObj);
         globalBestResults.sort((a, b) => b.score - a.score);
         globalBestResults = globalBestResults
@@ -1164,14 +1163,16 @@ self.onmessage = function (e) {
           .slice(0, 10);
 
         lastKnownUiPayload = globalBestResults.map((r, idx) => ({
-          id: idx + 1,
+          rank: idx + 1, // Track current rank separately
+          id: r.id, // Pass the permanent ID
           score: r.score,
           layout: r.layout,
           cutLine: r.cutLine,
+          gen: r.gen,
+          pop: r.pop,
         }));
       }
 
-      // Intermittent UI Broadcast (streams the live leaderboard ~10 times per generation)
       if (
         popIdx > 0 &&
         popIdx % Math.max(1, Math.floor(population.length / 10)) === 0
@@ -1186,7 +1187,6 @@ self.onmessage = function (e) {
       }
     }
 
-    // Breed the Next Generation
     if (gen < config.generations - 1 && generationResults.length > 0) {
       let nextPopulation = [];
       const eliteCount = Math.min(config.elitism, generationResults.length);
@@ -1212,7 +1212,6 @@ self.onmessage = function (e) {
     }
   }
 
-  // Final Job Done Broadcast
   self.postMessage({
     type: "done",
     topIterations: lastKnownUiPayload,

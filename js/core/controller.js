@@ -1,5 +1,5 @@
 //js/core/controller.js
-//version no. 6.5
+//version no. 6.7
 
 import { machine } from "./machine.js";
 
@@ -26,6 +26,7 @@ export class ControllerManager {
 
     this.activeAngle = null;
     this.drivingAngle = null;
+    this.continuousA = null; // THE FIX: Track continuously spooled angle
     this.buttonStates = {};
 
     window.addEventListener(
@@ -302,17 +303,31 @@ export class ControllerManager {
     if (!this.wasDriving) {
       this.wasDriving = true;
       this.drivingAngle = this.activeAngle;
+
+      // THE FIX: Seed the continuous tracker with the actual physical rotation of the machine
+      this.continuousA = machine.currentPos.a || 0;
+
+      // Calculate shortest rotational path from current physical position to initial joystick angle
+      let initialDelta = this.activeAngle - (this.continuousA % (2 * Math.PI));
+      if (initialDelta > Math.PI) initialDelta -= 2 * Math.PI;
+      if (initialDelta < -Math.PI) initialDelta += 2 * Math.PI;
+      this.continuousA += initialDelta;
+
       this.virtualTarget = { ...machine.currentPos };
       this.spjs.send(`send ${port} G90`);
     } else {
-      let angleDiff = Math.abs(this.activeAngle - this.drivingAngle);
-      if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+      // THE FIX: Calculate shortest path delta for continuous unwrapping across the 0/6.28 boundary
+      let delta = this.activeAngle - this.drivingAngle;
+      if (delta > Math.PI) delta -= 2 * Math.PI;
+      if (delta < -Math.PI) delta += 2 * Math.PI;
 
-      if (angleDiff > this.config.angleSnapThreshold) {
+      if (Math.abs(delta) > this.config.angleSnapThreshold) {
         this.triggerStop(port, "Sharp Turn: Recalculating Vector");
         return;
       }
+
       this.drivingAngle = this.activeAngle;
+      this.continuousA += delta; // Accumulate the unwrapped angle effortlessly
     }
 
     // THE FIX: Gamepad ignores hardware buffer. The 50ms setInterval is a perfect native rate-limit.
@@ -332,11 +347,13 @@ export class ControllerManager {
     this.virtualTarget.x += Math.cos(this.activeAngle) * stride;
     this.virtualTarget.y += Math.sin(this.activeAngle) * stride;
 
-    const moveCmd = `G1 X${this.virtualTarget.x.toFixed(4)} Y${this.virtualTarget.y.toFixed(4)} F${Math.round(feed)}`;
+    // THE FIX: Inject the unwrapped `continuousA` so the controller never suddenly "spins back" across 0
+    const moveCmd = `G1 X${this.virtualTarget.x.toFixed(4)} Y${this.virtualTarget.y.toFixed(4)} A${this.continuousA.toFixed(4)} F${Math.round(feed)}`;
     this.spjs.send(`send ${port} ${moveCmd}`);
 
     machine.targetPos.x = this.virtualTarget.x;
     machine.targetPos.y = this.virtualTarget.y;
+    machine.targetPos.a = this.continuousA;
     machine.notify();
   }
 
@@ -345,6 +362,10 @@ export class ControllerManager {
     this.spjs.send(`send ${port} %`);
 
     setTimeout(() => {
+      // Rapid return the A-axis to 0 ONLY when the user releases the gamepad trigger
+      if (msg === "Trigger Released: Stopped") {
+        this.spjs.send(`send ${port} G90 G0 A0`);
+      }
       this.spjs.send(`send ${port} {"sr":""}`);
     }, 150);
 
@@ -361,6 +382,7 @@ export class ControllerManager {
     this.wasDriving = false;
     this.virtualTarget = null;
     this.drivingAngle = null;
+    this.continuousA = null; // Clean up tracker on release
     this.log(msg);
   }
 

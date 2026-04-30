@@ -1,7 +1,6 @@
 // js/core/nester.js
-//version no. 2.3
+//version no. 2.6
 
-//version no. 2.5
 const savedConfig = JSON.parse(localStorage.getItem("nestConfig")) || {};
 window.NestConfig = {
   strategy: savedConfig.strategy || "TOPOGRAPHIC_SWEEP",
@@ -21,6 +20,13 @@ export class Nester {
       "NEST_CONFIG_UPDATED",
       (e) => (window.NestConfig = e.detail),
     );
+
+    // THE FIX: Track the local nesting mask
+    this.activeMask = null;
+    document.addEventListener("NESTING_MASK_UPDATED", (e) => {
+      this.activeMask = e.detail;
+    });
+
     this.worker = null;
   }
 
@@ -169,7 +175,7 @@ export class Nester {
   }
 
   static placePiece(pieceDef, fabric, placedPieces) {
-    const gridStep = 10; // Faster sweep for instant UI staging
+    const gridStep = 10;
     const fBox = this.getBoundingBox(fabric.edgeProfile);
     const pBox = this.getBoundingBox(pieceDef.vertices);
     const pad = window.NestConfig.space;
@@ -212,8 +218,13 @@ export class Nester {
   // --- WORKER CONTROLS ---
   startNesting(fabric, placedInstances) {
     if (!fabric) return;
-    const manualPieces = placedInstances.filter((p) => !p.nestingEnabled);
-    const autoPieces = placedInstances.filter((p) => p.nestingEnabled);
+
+    // THE FIX: Completely hide DIY drawn lines from the nesting engine
+    const validInstances = placedInstances.filter((p) => !p.isDiy);
+
+    const manualPieces = validInstances.filter((p) => !p.nestingEnabled);
+    const autoPieces = validInstances.filter((p) => p.nestingEnabled);
+
     if (autoPieces.length === 0) return;
 
     if (this.worker) this.worker.terminate();
@@ -222,7 +233,6 @@ export class Nester {
     this.worker.onmessage = (e) => {
       const data = e.data;
 
-      // Catch the high-speed live frames
       if (data.type === "ghost") {
         document.dispatchEvent(
           new CustomEvent("NESTING_GHOST_FRAME", {
@@ -238,7 +248,7 @@ export class Nester {
               topIterations: e.data.topIterations,
               progress: {
                 currentGen: e.data.currentGen || 0,
-                totalGens: e.data.totalGens || 1, // 1 prevents divide-by-zero
+                totalGens: e.data.totalGens || 1,
                 genProgress: e.data.genProgress || 100,
               },
             },
@@ -257,6 +267,7 @@ export class Nester {
 
     this.worker.postMessage({
       fabric,
+      activeMask: this.activeMask,
       pieces: autoPieces,
       manualPieces,
       config: window.NestConfig,
