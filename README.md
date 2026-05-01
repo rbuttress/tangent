@@ -2,6 +2,8 @@
 
 This is essentially a customized minimal chilipeppr, a dxf parser built around CLO3d specific layer formats (legacy version: https://github.com/rbuttress/clo2dxf) with a few key drawing functions from inkscape borrowing from PathtoGcode from inkscape gcode tools, a crude replica of deepnest.io, and a 4 axis gcode post processor (legacy version: https://github.com/rbuttress/xyz2xyza) for the tangential knife table I built in 2023 https://github.com/rbuttress/full
 
+![Dashboard Screenshot](./screenshot.jpg)
+
 Here I gathered a workflow spanning 5 tools into one local javascript application that does the following:
 
 ## Feature List
